@@ -31,6 +31,10 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	confianzaredis "github.com/r-david1/moterus/internal/confianza/adaptadores/redis"
+	"github.com/r-david1/moterus/internal/confianza/adaptadores/turnstile"
+	confianzaaplicacion "github.com/r-david1/moterus/internal/confianza/aplicacion"
+	confianzapuertos "github.com/r-david1/moterus/internal/confianza/puertos"
 	"github.com/r-david1/moterus/internal/identidad/adaptadores/auditoria"
 	"github.com/r-david1/moterus/internal/identidad/adaptadores/confianza"
 	"github.com/r-david1/moterus/internal/identidad/adaptadores/cripto"
@@ -40,6 +44,8 @@ import (
 	identidadpostgres "github.com/r-david1/moterus/internal/identidad/adaptadores/postgres"
 	"github.com/r-david1/moterus/internal/identidad/aplicacion"
 	"github.com/r-david1/moterus/internal/identidad/dominio"
+	"github.com/r-david1/moterus/internal/identidad/puertos"
+	"github.com/r-david1/moterus/internal/plataforma/cache"
 	"github.com/r-david1/moterus/internal/plataforma/ids"
 	"github.com/r-david1/moterus/internal/plataforma/reloj"
 )
@@ -131,6 +137,23 @@ func poolDueno(t *testing.T) *pgxpool.Pool {
 // Identidad registradas, lista para app.Test(req).
 func nuevoServidorIdentidad(t *testing.T, pool *pgxpool.Pool) *fiber.App {
 	t.Helper()
+	loggerSilencioso := slog.New(slog.NewTextHandler(io.Discard, nil))
+	return nuevoServidorIdentidadConNotificador(t, pool, notificaciones.NuevoNotificadorCorreoLog(loggerSilencioso))
+}
+
+// nuevoServidorIdentidadConNotificador es la misma construcción que
+// nuevoServidorIdentidad pero permite inyectar un puertos.NotificadorCorreo
+// propio. Existe porque NotificadorCorreoLog (el adaptador real de este
+// hito, sección 3.4 del diseño) es deliberadamente log-only: el token de
+// verificación en claro solo queda en el logger, nunca en un puerto de
+// salida legible por el test. Los tests de verificación de correo
+// (verificacion_correo_test.go) necesitan el token en claro para poder
+// ejercer POST /identidad/verificaciones-correo, así que inyectan aquí un
+// captor en memoria en vez del NotificadorCorreoLog real — el resto del
+// cableado (Postgres, Argon2id, auditoría, evaluador de confianza no-op)
+// es idéntico a nuevoServidorIdentidad/montarIdentidad (cmd/api/main.go).
+func nuevoServidorIdentidadConNotificador(t *testing.T, pool *pgxpool.Pool, notificadorCorreo puertos.NotificadorCorreo) *fiber.App {
+	t.Helper()
 
 	relojReal := reloj.NuevoReal()
 
@@ -146,8 +169,93 @@ func nuevoServidorIdentidad(t *testing.T, pool *pgxpool.Pool) *fiber.App {
 	loggerSilencioso := slog.New(slog.NewTextHandler(io.Discard, nil))
 	registroAuditoria := auditoria.NuevoRegistroAuditoria(pool)
 	publicadorEventos := eventos.NuevoPublicadorLog(loggerSilencioso)
+	// NoOp a propósito, igual que cmd/api/main.go sin REDIS_URL: el guardián
+	// de perímetro real (ADR 0018) se ejercita aparte, contra Redis real, en
+	// confianza_redis_test.go (el motor de rate limiting) y en el harness
+	// dedicado nuevoServidorIdentidadConConfianzaReal (guardián de
+	// ReenviarVerificacion end-to-end vía HTTP, verificacion_correo_test.go).
+	// Usar aquí el no-op evita que las aserciones de negocio de este
+	// paquete (login, registro, verificación de correo) se acoplen a
+	// contadores de Redis compartidos entre corridas de test.
 	evaluadorConfianza := confianza.NuevoEvaluadorConfianzaNoOp(loggerSilencioso)
+
+	registrador := aplicacion.NuevoRegistrarUsuarioCasoDeUso(
+		repositorioUsuarios, hasher, verificadorFiltradas, evaluadorConfianza,
+		registroAuditoria, publicadorEventos, relojReal, generadorIDs, unidadDeTrabajo,
+		generadorTokens, repositorioTokensVerificacion, notificadorCorreo,
+	)
+	autenticador := aplicacion.NuevoAutenticarUsuarioCasoDeUso(
+		repositorioUsuarios, hasher, evaluadorConfianza,
+		registroAuditoria, publicadorEventos, relojReal, unidadDeTrabajo,
+	)
+	consultor := aplicacion.NuevoObtenerUsuarioCasoDeUso(repositorioUsuarios, registroAuditoria, relojReal)
+	verificadorCorreo := aplicacion.NuevoVerificarCorreoCasoDeUso(
+		repositorioUsuarios, repositorioTokensVerificacion, registroAuditoria, publicadorEventos, relojReal, unidadDeTrabajo,
+	)
+	reenviadorVerificacion := aplicacion.NuevoReenviarVerificacionCasoDeUso(
+		repositorioUsuarios, generadorTokens, repositorioTokensVerificacion, notificadorCorreo, relojReal,
+	)
+
+	manejador := identidadhttp.NuevoManejadorIdentidad(registrador, autenticador, consultor, verificadorCorreo, reenviadorVerificacion, evaluadorConfianza)
+
+	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	identidadhttp.RegistrarRutas(app, manejador)
+	return app
+}
+
+// nuevoServidorIdentidadConConfianzaReal reproduce el mismo cableado que
+// nuevoServidorIdentidad pero con EvaluadorConfianzaReal (ADR 0018) en vez
+// del no-op — exactamente lo que cmd/api/main.go monta cuando REDIS_URL
+// está configurado (construirEvaluadorConfianza). Existe para poder
+// verificar con un test de integración real que el guardián de perímetro
+// de POST /identidad/verificaciones-correo/reenvios (handlers.go,
+// ManejadorIdentidad.ReenviarVerificacion) efectivamente bloquea con 429
+// tras el umbral de PoliticaLimitesPorDefecto — algo que
+// nuevoServidorIdentidad (no-op a propósito) nunca puede ejercer. Se salta
+// limpiamente si REDIS_URL no está definido, mismo criterio que
+// clienteRedis en confianza_redis_test.go.
+func nuevoServidorIdentidadConConfianzaReal(t *testing.T, pool *pgxpool.Pool) *fiber.App {
+	t.Helper()
+
+	url := os.Getenv("REDIS_URL")
+	if url == "" {
+		t.Skip("REDIS_URL no está definido: se omite el test del guardián de perímetro real (ADR 0018)")
+	}
+	clienteRedisCrudo, err := cache.NuevoClienteRedis(url)
+	if err != nil {
+		t.Fatalf("no se pudo construir el cliente Redis: %v", err)
+	}
+	t.Cleanup(func() { _ = clienteRedisCrudo.Close() })
+	if err := clienteRedisCrudo.Ping(context.Background()).Err(); err != nil {
+		t.Fatalf("no se pudo conectar a Redis en %s: %v", url, err)
+	}
+
+	relojReal := reloj.NuevoReal()
+
+	repositorioUsuarios := identidadpostgres.NuevoRepositorioUsuarios(pool)
+	repositorioTokensVerificacion := identidadpostgres.NuevoRepositorioTokensVerificacion(pool)
+	unidadDeTrabajo := identidadpostgres.NuevaUnidadDeTrabajo(pool)
+	generadorIDs := identidadpostgres.NuevoGeneradorIDs()
+
+	hasher := cripto.NuevoHasherArgon2id()
+	verificadorFiltradas := cripto.NuevoVerificadorHIBP(cripto.ConBaseURLHIBP(servidorHIBPPruebas.URL + "/range/"))
+	generadorTokens := cripto.NuevoGeneradorTokens()
+
+	loggerSilencioso := slog.New(slog.NewTextHandler(io.Discard, nil))
+	registroAuditoria := auditoria.NuevoRegistroAuditoria(pool)
+	publicadorEventos := eventos.NuevoPublicadorLog(loggerSilencioso)
 	notificadorCorreo := notificaciones.NuevoNotificadorCorreoLog(loggerSilencioso)
+
+	// Mismo ensamblaje que construirEvaluadorConfianza en cmd/api/main.go:
+	// LimitadorTasa real sobre Redis + VerificadorCaptcha en modo fail-open
+	// de desarrollo (sin secretKey, entornoApp != "production"). Ningún
+	// endpoint de este paquete envía TokenCaptcha, así que el captcha nunca
+	// llega a evaluarse de verdad (huboToken == false, ver
+	// EvaluarTrustSignalCasoDeUso.Evaluar) — solo hace falta construirlo.
+	limitador := confianzaredis.NuevoLimitadorTasa(clienteRedisCrudo)
+	verificadorCaptcha := turnstile.NuevoVerificadorCaptcha("", "", "development")
+	evaluarTrustSignal := confianzaaplicacion.NuevoEvaluarTrustSignalCasoDeUso(limitador, verificadorCaptcha)
+	evaluadorConfianza := confianza.NuevoEvaluadorConfianzaReal(confianzapuertos.EvaluadorDeRiesgo(evaluarTrustSignal))
 
 	registrador := aplicacion.NuevoRegistrarUsuarioCasoDeUso(
 		repositorioUsuarios, hasher, verificadorFiltradas, evaluadorConfianza,
@@ -199,6 +307,9 @@ func borrarUsuario(t *testing.T, poolDueno *pgxpool.Pool, idUsuario string) {
 	if idUsuario == "" {
 		return
 	}
+	// tokens_verificacion_correo.usuario_id tiene ON DELETE CASCADE
+	// (migración 000005) precisamente para que este DELETE no necesite
+	// borrar el token huérfano por separado.
 	if _, err := poolDueno.Exec(context.Background(), `DELETE FROM usuarios WHERE id = $1`, idUsuario); err != nil {
 		t.Logf("no se pudo limpiar el usuario de prueba %s: %v", idUsuario, err)
 	}
