@@ -45,3 +45,11 @@ desenlace, no acciones distintas.
 
 Sin acciones propias todavía — se agregan aquí a medida que Tenencia,
 Acceso y Confianza empiecen a emitir auditoría.
+
+**Acceso (propuestas, todavía NO en la tabla `auditoria_acciones`):** el
+diseño del contexto (`docs/design/acceso-bounded-context.md`, secciones 1.6
+y 6) prevé seis acciones — `sesion.iniciada`, `sesion.renovada`,
+`sesion.reuso_refresco_detectado`, `sesion.cerrada`, `sesion.revocada` y
+`token_acceso.rechazado` — que se publicarán aquí junto con la migración
+`000007_acciones_auditoria_acceso`, siguiendo el procedimiento de arriba.
+Hasta que esa migración exista, no son válidas: la FK las rechazaría.
