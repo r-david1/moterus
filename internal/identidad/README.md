@@ -19,8 +19,10 @@ Identidad **no** hace (y por diseño no debe hacerse aquí):
   **Acceso**, que **todavía no existe** en este repositorio (ver ADR 0009).
 - Roles, organizaciones, membresías — contexto **Tenencia** (todavía no
   existe).
-- Rate limiting, captcha, score de riesgo — contexto **Confianza** (hoy
-  montado como adaptador *no-op*, ver más abajo).
+- Rate limiting, captcha, score de riesgo — contexto **Confianza**. Desde
+  ADR 0018 hay una implementación real (`EvaluadorConfianzaReal`, Redis +
+  Cloudflare Turnstile) además del adaptador *no-op* original — ver más
+  abajo cuál se monta según la configuración.
 - Persistir la bitácora forense — contexto **Auditoría** (implementado como
   tablas/triggers en Postgres dentro de este mismo repo, consumido por
   Identidad vía el puerto `RegistroAuditoria`).
@@ -40,8 +42,8 @@ el contexto **Acceso** se implemente, es el consumidor previsto de
 ## Cómo levantarlo en local
 
 ```bash
-make docker-up     # levanta Postgres (y Redis, sin uso todavía en Identidad)
-make migrate-up     # aplica las 3 migraciones: usuarios, auditoria, rol_login_aplicacion
+make docker-up     # levanta Postgres y Redis
+make migrate-up     # aplica las migraciones: usuarios, auditoria, rol_login_aplicacion, tokens_verificacion_correo
 make run             # arranca el servidor en :8080 (PORT por defecto)
 ```
 
@@ -58,6 +60,27 @@ Valores de desarrollo (`Makefile`):
 DATABASE_URL             = postgres://auth_service:auth_service_dev_password@localhost:5432/auth_service?sslmode=disable
 DATABASE_URL_APLICACION  = postgres://rol_login_identidad:identidad_app_dev_password@localhost:5432/auth_service?sslmode=disable
 ```
+
+### Rate limiting y captcha (ADR 0018)
+
+`REDIS_URL` (env, sin valor por defecto) decide qué `EvaluadorConfianza` se
+monta en `cmd/api/main.go`:
+
+- **Sin `REDIS_URL`**: `EvaluadorConfianzaNoOp` (comportamiento previo,
+  sin cambios) — `WARN` de arranque, ningún límite real.
+- **Con `REDIS_URL`** (p. ej. `redis://localhost:6379/0`, el Redis de
+  `docker-compose.yml`): `EvaluadorConfianzaReal` — rate limiting por IP y
+  por cuenta vía Redis, más verificación de captcha (Cloudflare Turnstile
+  por defecto, ADR 0003) si `TURNSTILE_SECRET_KEY` está definida. Sin esa
+  llave: fail-open con `WARN` en desarrollo, fail-closed con `ERROR` si
+  `APP_ENV=production`. `TURNSTILE_VERIFY_URL` permite apuntar a un
+  servidor de pruebas en vez del endpoint real de Cloudflare.
+
+Probar localmente sin credenciales reales de Turnstile: basta con levantar
+Redis (`make docker-up`) y definir `REDIS_URL` — el captcha queda en modo
+fail-open (dev) automáticamente, sin necesidad de una cuenta de Cloudflare.
+Ver `docs/adr/0018-rate-limiting-captcha-confianza-redis.md` para los
+umbrales exactos y la verificación manual contra el servidor real.
 
 Health check de infraestructura (no es un endpoint de negocio de ningún
 contexto): `GET /health`.

@@ -3,6 +3,7 @@ package dominio
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Errores de dominio tipados (tabla 1.5 del diseño del contexto Identidad).
@@ -90,7 +91,16 @@ func (e *ErrTransicionEstadoInvalida) Error() string {
 // ErrAccesoDenegadoPorConfianza se produce cuando el contexto Confianza
 // bloquea un intento (login o registro) antes de que Identidad lo procese.
 // El caso de uso lo propaga; el adaptador HTTP lo mapea a 429/403.
-type ErrAccesoDenegadoPorConfianza struct{ Motivo string }
+//
+// ReintentarEn viaja opcionalmente (puertos.DecisionConfianza.ReintentarEn)
+// para que el adaptador HTTP pueda fijar la cabecera Retry-After — antes de
+// que EvaluadorConfianza dejara de ser no-op este campo no existía y el
+// 429 se devolvía sin esa cabecera (gap documentado en
+// identidad/adaptadores/http/errores_http.go); ADR 0018 lo cierra.
+type ErrAccesoDenegadoPorConfianza struct {
+	Motivo       string
+	ReintentarEn time.Duration
+}
 
 func (e *ErrAccesoDenegadoPorConfianza) Error() string {
 	return "acceso denegado por evaluación de confianza"

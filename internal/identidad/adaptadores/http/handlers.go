@@ -2,7 +2,9 @@ package http
 
 import (
 	"context"
+	"log/slog"
 
+	"github.com/r-david1/moterus/internal/identidad/dominio"
 	"github.com/r-david1/moterus/internal/identidad/puertos"
 )
 
@@ -16,16 +18,28 @@ type ManejadorIdentidad struct {
 	consultor                puertos.ConsultorDeUsuarios
 	verificadorDeCorreo      puertos.VerificadorDeCorreo
 	reenviadorDeVerificacion puertos.ReenviadorDeVerificacion
+	// confianza es el mismo puertos.EvaluadorConfianza que ya usan
+	// internamente RegistrarUsuarioCasoDeUso y AutenticarUsuarioCasoDeUso
+	// (inyectado dos veces: una vez en aplicacion, otra aquí) — se
+	// necesita también en este adaptador porque
+	// ReenviarVerificacionCasoDeUso (sección 3.4 del diseño) nunca llama a
+	// EvaluadorConfianza: ver Guardián de perímetro de ReenviarVerificacion
+	// más abajo y ADR 0018 para el porqué de esta asimetría deliberada en
+	// vez de tocar la aplicación (ya cerrada) de Identidad.
+	confianza puertos.EvaluadorConfianza
 }
 
 // NuevoManejadorIdentidad construye el manejador HTTP con sus puertos de
-// entrada inyectados.
+// entrada inyectados. confianza puede ser nil: en ese caso el guardián de
+// perímetro de ReenviarVerificacion no hace ninguna evaluación (equivalente
+// a un EvaluadorConfianzaNoOp implícito) — ver ReenviarVerificacion.
 func NuevoManejadorIdentidad(
 	registrador puertos.RegistradorDeUsuarios,
 	autenticador puertos.AutenticadorDeCredenciales,
 	consultor puertos.ConsultorDeUsuarios,
 	verificadorDeCorreo puertos.VerificadorDeCorreo,
 	reenviadorDeVerificacion puertos.ReenviadorDeVerificacion,
+	confianza puertos.EvaluadorConfianza,
 ) *ManejadorIdentidad {
 	return &ManejadorIdentidad{
 		registrador:              registrador,
@@ -33,6 +47,7 @@ func NuevoManejadorIdentidad(
 		consultor:                consultor,
 		verificadorDeCorreo:      verificadorDeCorreo,
 		reenviadorDeVerificacion: reenviadorDeVerificacion,
+		confianza:                confianza,
 	}
 }
 
@@ -120,11 +135,46 @@ func (m *ManejadorIdentidad) VerificarCorreo(ctx context.Context, in *VerificarC
 // INV-ID-22). Responde siempre 202 Accepted, exista o no el correo: el
 // caso de uso ReenviarVerificacionCasoDeUso.Reenviar ya garantiza que nunca
 // devuelve un error observable (siempre nil), así que este handler no debe
-// agregar ningún manejo de error que rompa esa garantía.
+// agregar ningún manejo de error que rompa esa garantía salvo el guardián
+// de perímetro de abajo, que SÍ puede devolver 429 (ver comentario).
+//
+// Guardián de perímetro (ADR 0018): a diferencia de Registrar y Autenticar,
+// ReenviarVerificacionCasoDeUso (aplicacion, ya cerrada) nunca consulta
+// EvaluadorConfianza — el diseño original de la sección 3.4 no incluyó esa
+// llamada. En vez de tocar la aplicación cerrada de Identidad para agregar
+// un hook que ya existe para los otros dos endpoints, este adaptador HTTP
+// llama directamente al mismo puertos.EvaluadorConfianza (mismo motor de
+// rate limiting/captcha de Confianza) ANTES de invocar el caso de uso, con
+// Accion="reenvio_verificacion". Que este endpoint pueda devolver 429 no
+// contradice INV-ID-22 (esa invariante es sobre el DESENLACE DE NEGOCIO —
+// no revelar si el correo existe/está verificado/etc — no sobre si el
+// perímetro decide ni siquiera dejar pasar la solicitud, igual que un WAF
+// bloqueando antes de que la petición llegue al proceso).
 func (m *ManejadorIdentidad) ReenviarVerificacion(ctx context.Context, in *ReenviarVerificacionInput) (*ReenviarVerificacionOutput, error) {
+	origen := origenSolicitudDesdeContexto(ctx)
+	if m.confianza != nil {
+		decision, err := m.confianza.Evaluar(ctx, puertos.SolicitudEvaluacion{
+			Accion:            "reenvio_verificacion",
+			CorreoNormalizado: in.Body.Correo,
+			Origen:            origen,
+		})
+		switch {
+		case err != nil:
+			// Fail-open (mismo criterio que VerificadorContrasenasFiltradas
+			// en RegistrarUsuarioCasoDeUso): una caída del perímetro no
+			// puede convertir este endpoint en indisponible.
+			slog.WarnContext(ctx, "guardián de perímetro de reenvío de verificación no disponible; continuando fail-open", "error", err)
+		case !decision.Permitido:
+			return nil, mapearErrorDominio(ctx, &dominio.ErrAccesoDenegadoPorConfianza{
+				Motivo:       decision.Motivo,
+				ReintentarEn: decision.ReintentarEn,
+			})
+		}
+	}
+
 	_ = m.reenviadorDeVerificacion.Reenviar(ctx, puertos.ComandoReenviarVerificacion{
 		Correo: in.Body.Correo,
-		Origen: origenSolicitudDesdeContexto(ctx),
+		Origen: origen,
 	})
 	return &ReenviarVerificacionOutput{}, nil
 }

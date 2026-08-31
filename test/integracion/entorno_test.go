@@ -166,7 +166,7 @@ func nuevoServidorIdentidad(t *testing.T, pool *pgxpool.Pool) *fiber.App {
 		repositorioUsuarios, generadorTokens, repositorioTokensVerificacion, notificadorCorreo, relojReal,
 	)
 
-	manejador := identidadhttp.NuevoManejadorIdentidad(registrador, autenticador, consultor, verificadorCorreo, reenviadorVerificacion)
+	manejador := identidadhttp.NuevoManejadorIdentidad(registrador, autenticador, consultor, verificadorCorreo, reenviadorVerificacion, evaluadorConfianza)
 
 	app := fiber.New(fiber.Config{DisableStartupMessage: true})
 	identidadhttp.RegistrarRutas(app, manejador)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 
 	"github.com/danielgtaylor/huma/v2"
 
@@ -19,7 +20,14 @@ import (
 // Regla de INV-ID-11 aplicada aquí: ErrCredencialesInvalidas SIEMPRE se
 // traduce al mismo 401 genérico, sin distinguir "correo no encontrado" de
 // "contraseña incorrecta" ni en el status ni en el mensaje.
-func mapearErrorDominio(ctx context.Context, err error) huma.StatusError {
+// El tipo de retorno es error (no huma.StatusError): desde ADR 0018, la
+// rama de errAccesoDenegado puede envolver el huma.StatusError con
+// huma.ErrorWithHeaders para poder fijar Retry-After, y el tipo devuelto
+// por esa función (*errWithHeaders, no exportado por huma) solo satisface
+// error + huma.HeadersError, no huma.StatusError directamente — Huma sigue
+// resolviendo el status code correcto internamente con errors.As sobre el
+// error envuelto.
+func mapearErrorDominio(ctx context.Context, err error) error {
 	if err == nil {
 		return nil
 	}
@@ -88,14 +96,23 @@ func mapearErrorDominio(ctx context.Context, err error) huma.StatusError {
 		return huma.Error409Conflict("transición de estado inválida")
 
 	case errors.As(err, &errAccesoDenegado):
-		// El diseño (sección 1.5) pide 429/403 con Retry-After; el error de
-		// dominio no transporta ReintentarEn (eso vive en
-		// puertos.DecisionConfianza, no en el error), así que hoy se
-		// devuelve 429 sin esa cabecera. Gap documentado en el reporte de
-		// cierre: cuando EvaluadorConfianza deje de ser no-op, conviene que
-		// el caso de uso o este adaptador tengan forma de propagar
-		// ReintentarEn hasta aquí.
-		return huma.Error429TooManyRequests("acceso denegado por evaluación de riesgo")
+		// El diseño (sección 1.5) pide 429/403 con Retry-After. El gap que
+		// dejó documentado el cierre de Identidad (ErrAccesoDenegadoPorConfianza
+		// no transportaba ReintentarEn) se cerró en ADR 0018 junto con el
+		// EvaluadorConfianza real: si ReintentarEn viene fijado, se agrega
+		// la cabecera Retry-After en segundos (redondeado hacia arriba,
+		// mínimo 1s); si viene vacío (p. ej. EvaluadorConfianzaNoOp, o un
+		// motivo que no trae backoff), se devuelve el 429 sin la cabecera,
+		// igual que antes.
+		errBase := huma.Error429TooManyRequests("acceso denegado por evaluación de riesgo")
+		if errAccesoDenegado.ReintentarEn <= 0 {
+			return errBase
+		}
+		segundos := int(errAccesoDenegado.ReintentarEn.Seconds())
+		if segundos < 1 {
+			segundos = 1
+		}
+		return huma.ErrorWithHeaders(errBase, http.Header{"Retry-After": []string{strconv.Itoa(segundos)}})
 
 	case errors.As(err, &errConcurrencia):
 		return huma.Error409Conflict("conflicto de concurrencia; reintenta la operación")

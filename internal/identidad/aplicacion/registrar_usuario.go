@@ -88,7 +88,7 @@ func (c *RegistrarUsuarioCasoDeUso) Registrar(ctx context.Context, cmd puertos.C
 			// prioriza el error de auditoría sobre el de negocio.
 			return puertos.ResultadoRegistro{}, errAud
 		}
-		return puertos.ResultadoRegistro{}, &dominio.ErrAccesoDenegadoPorConfianza{Motivo: decision.Motivo}
+		return puertos.ResultadoRegistro{}, &dominio.ErrAccesoDenegadoPorConfianza{Motivo: decision.Motivo, ReintentarEn: decision.ReintentarEn}
 	}
 
 	// 2. Construcción de VOs: todo input inválido produce un error de

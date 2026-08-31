@@ -80,7 +80,7 @@ func (c *AutenticarUsuarioCasoDeUso) Autenticar(ctx context.Context, cmd puertos
 		if errAud := c.auditoria.Registrar(ctx, evento, cmd.Origen); errAud != nil {
 			return puertos.ResultadoAutenticacion{}, errAud
 		}
-		return puertos.ResultadoAutenticacion{}, &dominio.ErrAccesoDenegadoPorConfianza{Motivo: decision.Motivo}
+		return puertos.ResultadoAutenticacion{}, &dominio.ErrAccesoDenegadoPorConfianza{Motivo: decision.Motivo, ReintentarEn: decision.ReintentarEn}
 	}
 
 	// 2. Un correo malformado no debe distinguirse de uno inexistente

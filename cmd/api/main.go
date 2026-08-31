@@ -10,19 +10,26 @@ package main
 import (
 	"context"
 	"log"
+	"log/slog"
 	"strconv"
 
 	"github.com/gofiber/fiber/v2"
 
+	confianzaredis "github.com/r-david1/moterus/internal/confianza/adaptadores/redis"
+	"github.com/r-david1/moterus/internal/confianza/adaptadores/turnstile"
+	confianzaaplicacion "github.com/r-david1/moterus/internal/confianza/aplicacion"
+	confianzapuertos "github.com/r-david1/moterus/internal/confianza/puertos"
 	"github.com/r-david1/moterus/internal/identidad/adaptadores/auditoria"
-	"github.com/r-david1/moterus/internal/identidad/adaptadores/confianza"
+	identidadconfianza "github.com/r-david1/moterus/internal/identidad/adaptadores/confianza"
 	"github.com/r-david1/moterus/internal/identidad/adaptadores/cripto"
 	"github.com/r-david1/moterus/internal/identidad/adaptadores/eventos"
 	identidadhttp "github.com/r-david1/moterus/internal/identidad/adaptadores/http"
 	"github.com/r-david1/moterus/internal/identidad/adaptadores/notificaciones"
 	identidadpostgres "github.com/r-david1/moterus/internal/identidad/adaptadores/postgres"
 	"github.com/r-david1/moterus/internal/identidad/aplicacion"
+	"github.com/r-david1/moterus/internal/identidad/puertos"
 	"github.com/r-david1/moterus/internal/plataforma/bd"
+	"github.com/r-david1/moterus/internal/plataforma/cache"
 	"github.com/r-david1/moterus/internal/plataforma/configuracion"
 	"github.com/r-david1/moterus/internal/plataforma/reloj"
 )
@@ -102,7 +109,7 @@ func montarIdentidad(ctx context.Context, app *fiber.App, cfg configuracion.Conf
 
 	registroAuditoria := auditoria.NuevoRegistroAuditoria(pool)
 	publicadorEventos := eventos.NuevoPublicadorLog(nil)
-	evaluadorConfianza := confianza.NuevoEvaluadorConfianzaNoOp(nil)
+	evaluadorConfianza := construirEvaluadorConfianza(cfg)
 	notificadorCorreo := notificaciones.NuevoNotificadorCorreoLog(nil)
 
 	registrador := aplicacion.NuevoRegistrarUsuarioCasoDeUso(
@@ -149,8 +156,41 @@ func montarIdentidad(ctx context.Context, app *fiber.App, cfg configuracion.Conf
 		relojReal,
 	)
 
-	manejador := identidadhttp.NuevoManejadorIdentidad(registrador, autenticador, consultor, verificadorCorreo, reenviadorVerificacion)
+	manejador := identidadhttp.NuevoManejadorIdentidad(registrador, autenticador, consultor, verificadorCorreo, reenviadorVerificacion, evaluadorConfianza)
 	identidadhttp.RegistrarRutas(app, manejador)
 
-	log.Println("api: contexto Identidad montado (postgres, argon2id, hibp, auditoria, eventos-log, confianza-noop, notificador-correo-log)")
+	estadoConfianza := "confianza-noop"
+	if cfg.URLRedis != "" {
+		estadoConfianza = "confianza-real(redis+turnstile)"
+	}
+	log.Printf("api: contexto Identidad montado (postgres, argon2id, hibp, auditoria, eventos-log, %s, notificador-correo-log)", estadoConfianza)
+}
+
+// construirEvaluadorConfianza decide entre EvaluadorConfianzaNoOp y
+// EvaluadorConfianzaReal según si cfg.URLRedis está definida (ADR 0018).
+// Sin Redis configurado se mantiene el comportamiento previo exacto (noop
+// con WARN de arranque) — no rompe ningún despliegue de desarrollo
+// existente que no haya seteado REDIS_URL todavía. Con Redis configurado,
+// se monta el motor real de rate limiting (Confianza/Redis) y de captcha
+// (Cloudflare Turnstile, ADR 0003) detrás del mismo puerto
+// puertos.EvaluadorConfianza — Identidad no distingue cuál de los dos
+// está montado.
+func construirEvaluadorConfianza(cfg configuracion.Config) puertos.EvaluadorConfianza {
+	if cfg.URLRedis == "" {
+		return identidadconfianza.NuevoEvaluadorConfianzaNoOp(nil)
+	}
+
+	clienteRedis, err := cache.NuevoClienteRedis(cfg.URLRedis)
+	if err != nil {
+		log.Fatalf("api: REDIS_URL definido pero inválido: %v", err)
+	}
+
+	limitador := confianzaredis.NuevoLimitadorTasa(clienteRedis)
+	verificadorCaptcha := turnstile.NuevoVerificadorCaptcha(cfg.TurnstileSecretKey, cfg.TurnstileVerifyURL, cfg.EntornoApp)
+	evaluarTrustSignal := confianzaaplicacion.NuevoEvaluarTrustSignalCasoDeUso(limitador, verificadorCaptcha)
+
+	var riesgo confianzapuertos.EvaluadorDeRiesgo = evaluarTrustSignal
+	slog.Info("api: EvaluadorConfianza real montado (rate limiting por IP y por cuenta vía Redis + captcha Cloudflare Turnstile)",
+		"redis_configurado", true, "turnstile_secret_configurado", cfg.TurnstileSecretKey != "")
+	return identidadconfianza.NuevoEvaluadorConfianzaReal(riesgo)
 }

@@ -32,7 +32,7 @@ func RegistrarRutas(app *fiber.App, m *ManejadorIdentidad) huma.API {
 
 	metadatosEndpointPublico := map[string]any{
 		"x-auth-nivel":   "publico-sin-token",
-		"x-rate-limit":   "pendiente: agente seguridad-perimetral / contexto Confianza (no-op hoy, ver adaptadores/confianza)",
+		"x-rate-limit":   "ADR 0018: rate limiting por IP y por cuenta + captcha invisible vía EvaluadorConfianza (real si REDIS_URL está configurado, no-op si no; ver adaptadores/confianza)",
 		"x-adr-frontera": "ADR 0009: no emite JWT ni sesión; ver docs/adr/0009-frontera-identidad-acceso.md",
 	}
 
