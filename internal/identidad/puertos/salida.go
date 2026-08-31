@@ -1,0 +1,150 @@
+package puertos
+
+import (
+	"context"
+	"time"
+
+	"github.com/r-david1/moterus/internal/identidad/dominio"
+)
+
+// --- Persistencia -----------------------------------------------------------
+
+// RepositorioUsuarios es el puerto de salida para la persistencia del
+// agregado Usuario. Ningún otro contexto lee la tabla usuarios directamente
+// (INV-ID-20): el acceso siempre pasa por este puerto.
+type RepositorioUsuarios interface {
+	Guardar(ctx context.Context, u *dominio.Usuario) error
+	BuscarPorID(ctx context.Context, id dominio.IDUsuario) (*dominio.Usuario, error)
+	BuscarPorCorreo(ctx context.Context, c dominio.Correo) (*dominio.Usuario, error)
+}
+
+// --- Criptografía de credenciales -------------------------------------------
+
+// HasherContrasenas es el puerto de salida para el hashing y verificación
+// criptográfica de contraseñas (ADR candidato 0008: Argon2id).
+type HasherContrasenas interface {
+	Hashear(ctx context.Context, p dominio.ContrasenaPlana) (dominio.HashContrasena, error)
+	Verificar(ctx context.Context, h dominio.HashContrasena, p dominio.ContrasenaPlana) (bool, error)
+	NecesitaRehash(h dominio.HashContrasena) bool
+	// ConsumirTiempoEquivalente ejecuta un hash señuelo con el mismo coste
+	// que Verificar. Se invoca cuando el correo no existe, para que el
+	// tiempo de respuesta no revele la existencia de la cuenta (INV-ID-11).
+	ConsumirTiempoEquivalente(ctx context.Context)
+}
+
+// VerificadorContrasenasFiltradas es el puerto de salida para consultar
+// brechas de contraseñas conocidas (p. ej. HIBP). Requiere red, por eso no
+// vive en PoliticaContrasena (servicio de dominio puro).
+type VerificadorContrasenasFiltradas interface {
+	EstaFiltrada(ctx context.Context, p dominio.ContrasenaPlana) (bool, error)
+}
+
+// --- Infraestructura neutra --------------------------------------------------
+
+// Reloj es el puerto de salida para obtener la hora actual. El dominio
+// nunca llama a time.Now() (INV-ID-10); los casos de uso lo hacen a través
+// de este puerto para poder fijar el tiempo en los tests.
+type Reloj interface {
+	Ahora() time.Time
+}
+
+// GeneradorIDs es el puerto de salida para generar identificadores nuevos
+// de usuario. El dominio nunca genera UUIDs por sí mismo.
+type GeneradorIDs interface {
+	NuevoIDUsuario() (dominio.IDUsuario, error)
+}
+
+// UnidadDeTrabajo es el puerto de salida que agrupa la escritura de negocio
+// y el registro de auditoría en una sola transacción (ADR 0005, ADR
+// candidato 0010).
+type UnidadDeTrabajo interface {
+	Ejecutar(ctx context.Context, fn func(ctx context.Context) error) error
+}
+
+// --- Cruce de bounded contexts (anticorrupción) ------------------------------
+
+// EvaluadorConfianza es el puerto de salida implementado sobre el contexto
+// Confianza. Ningún intento de autenticación llega al repositorio sin
+// haber consultado antes a este puerto (INV-ID-12).
+type EvaluadorConfianza interface {
+	Evaluar(ctx context.Context, s SolicitudEvaluacion) (DecisionConfianza, error)
+	RegistrarResultado(ctx context.Context, r ResultadoIntento) error
+}
+
+// RegistroAuditoria es el puerto de salida implementado sobre el contexto
+// Auditoría. Un fallo al registrar la auditoría en una acción crítica
+// aborta la transacción de negocio (INV-ID-15).
+type RegistroAuditoria interface {
+	Registrar(ctx context.Context, e dominio.EventoDominio, origen dominio.OrigenSolicitud) error
+}
+
+// --- Integración asíncrona ---------------------------------------------------
+
+// PublicadorEventos es el puerto de salida para la integración asíncrona
+// (p. ej. el envío del correo de verificación tras UsuarioRegistrado). Se
+// invoca fuera de la UnidadDeTrabajo: es best-effort, no transaccional.
+type PublicadorEventos interface {
+	Publicar(ctx context.Context, eventos ...dominio.EventoDominio) error
+}
+
+// --- Verificación de correo (sección 3.4 del diseño) -------------------------
+
+// GeneradorTokens genera secretos aleatorios de alta entropía para flujos
+// de un solo uso (verificación de correo). No es GeneradorIDs: los IDs son
+// UUIDv7 (ordenables, no secretos); estos tokens son opacos y no deben ser
+// predecibles ni ordenables.
+type GeneradorTokens interface {
+	// Generar devuelve un token opaco, base64url, con al menos 32 bytes de
+	// entropía (crypto/rand del lado del adaptador). Nunca se persiste en
+	// claro (INV-ID-21): el caso de uso lo hashea antes de guardarlo.
+	Generar() (string, error)
+}
+
+// RepositorioTokensVerificacion persiste el hash (nunca el token plano) del
+// token de verificación de correo activo por usuario. Guardar hace upsert
+// por usuarioID: un reenvío invalida el token anterior sin necesidad de un
+// paso de borrado previo.
+type RepositorioTokensVerificacion interface {
+	Guardar(ctx context.Context, usuarioID dominio.IDUsuario, hashToken string, expiraEn time.Time) error
+	BuscarPorHash(ctx context.Context, hashToken string) (usuarioID dominio.IDUsuario, expiraEn time.Time, encontrado bool, err error)
+	Eliminar(ctx context.Context, usuarioID dominio.IDUsuario) error
+}
+
+// NotificadorCorreo envía el enlace/token de verificación al usuario. La
+// implementación real de envío (SMTP, proveedor transaccional, etc.) es
+// trabajo de infraestructura; en este hito puede ser un stub log-only.
+type NotificadorCorreo interface {
+	EnviarVerificacion(ctx context.Context, correo dominio.Correo, tokenPlano string) error
+}
+
+// --- Tipos de apoyo de los puertos de cruce ---------------------------------
+//
+// Viven en puertos, no en dominio, porque son el contrato con otro contexto
+// y no lenguaje ubicuo de Identidad.
+
+// SolicitudEvaluacion es la entrada de EvaluadorConfianza.Evaluar.
+type SolicitudEvaluacion struct {
+	Accion            string // "login" | "registro" | "reset_contrasena"
+	CorreoNormalizado string // clave de rate limit por cuenta, incluso si no existe
+	Origen            dominio.OrigenSolicitud
+	TokenCaptcha      string // opcional; vacío si el cliente no envió
+}
+
+// DecisionConfianza es la salida de EvaluadorConfianza.Evaluar.
+type DecisionConfianza struct {
+	Permitido       bool
+	RequiereStepUp  bool
+	RequiereCaptcha bool
+	Puntaje         float64
+	Motivo          string
+	ReintentarEn    time.Duration
+}
+
+// ResultadoIntento es la entrada de EvaluadorConfianza.RegistrarResultado.
+type ResultadoIntento struct {
+	Accion            string
+	CorreoNormalizado string
+	Origen            dominio.OrigenSolicitud
+	Exitoso           bool
+	UsuarioID         string // vacío si no se resolvió el usuario
+}
