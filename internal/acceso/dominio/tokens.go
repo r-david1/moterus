@@ -57,6 +57,14 @@ func (t TokenRefrescoPlano) Hash() HashTokenRefresco {
 	return HashearTokenRefresco(t)
 }
 
+// Valor expone el token en claro. Solo debe invocarlo el caso de uso que
+// acaba de emitirlo (IniciarSesion/RenovarSesion) para poblar el campo de
+// salida que el cliente recibe exactamente una vez (ResultadoSesion.
+// TokenRefresco, §2.1 del diseño), o un adaptador equivalente. Nunca debe
+// registrarse en logs, serializarse ni persistirse (INV-ACC-11); es el
+// mismo criterio y el mismo nombre que identidad/dominio.ContrasenaPlana.Valor().
+func (t TokenRefrescoPlano) Valor() string { return t.valor }
+
 // EsVacio indica si el value object nunca fue construido (zero value).
 func (t TokenRefrescoPlano) EsVacio() bool { return t.valor == "" }
 
