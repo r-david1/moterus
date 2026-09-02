@@ -41,15 +41,26 @@ desenlace, no acciones distintas.
    primero en `dominio/eventos.go` y en la tabla de eventos de
    `docs/design/identidad-bounded-context.md` (sección 1).
 
+## Contexto Acceso
+
+| Acción | Recurso | Descripción | Evento de dominio | Valores de `resultado` |
+|---|---|---|---|---|
+| `sesion.iniciada` | `sesion` | Emisión de una sesión nueva tras autenticación exitosa en Identidad. | `SesionIniciada` | `exito` |
+| `sesion.renovada` | `sesion` | Rotación del token de refresco: éxito, o fallo por refresco inválido/expirado/sesión no renovable. | `SesionRenovada`, `RenovacionRechazada` | `exito` / `fallo` |
+| `sesion.reuso_refresco_detectado` | `sesion` | Se presentó un token de refresco ya consumido: robo probable; revoca la sesión completa. | `ReusoRefrescoDetectado` | `denegado` |
+| `sesion.cerrada` | `sesion` | Cierre de sesión iniciado por el propio usuario (individual o de todos los dispositivos). | `SesionCerrada` | `exito` |
+| `sesion.revocada` | `sesion` | Revocación NO iniciada por el usuario: cuenta no operativa, cambio de contraseña, límite de sesiones o decisión administrativa. | `SesionRevocada` | `exito` |
+| `token_acceso.rechazado` | `token_acceso` | Rechazo de un token de acceso con valor de señal: firma inválida, `kid`/`alg`/`typ` inesperado o sesión en lista de revocación. **Nunca** para token simplemente expirado (INV-ACC-17). | `TokenAccesoRechazado` | `denegado` |
+
+7 eventos de dominio (`internal/acceso/dominio/eventos.go`, pendiente de
+implementación) mapean a estas 6 acciones — `sesion.renovada` absorbe tanto
+la renovación exitosa como la rechazada, mismo criterio que
+`usuario.login` en Identidad. Sembradas por la migración
+`db/migraciones/000007_acciones_auditoria_acceso.up.sql`, siguiendo el
+procedimiento de "Agregar una acción nueva" de arriba. Ver
+`docs/design/acceso-bounded-context.md`, secciones 1.6 y 6.
+
 ## Otros contextos
 
-Sin acciones propias todavía — se agregan aquí a medida que Tenencia,
-Acceso y Confianza empiecen a emitir auditoría.
-
-**Acceso (propuestas, todavía NO en la tabla `auditoria_acciones`):** el
-diseño del contexto (`docs/design/acceso-bounded-context.md`, secciones 1.6
-y 6) prevé seis acciones — `sesion.iniciada`, `sesion.renovada`,
-`sesion.reuso_refresco_detectado`, `sesion.cerrada`, `sesion.revocada` y
-`token_acceso.rechazado` — que se publicarán aquí junto con la migración
-`000007_acciones_auditoria_acceso`, siguiendo el procedimiento de arriba.
-Hasta que esa migración exista, no son válidas: la FK las rechazaría.
+Sin acciones propias todavía — se agregan aquí a medida que Tenencia y
+Confianza empiecen a emitir auditoría.
