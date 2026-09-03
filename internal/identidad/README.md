@@ -16,7 +16,12 @@ ciclo de vida de la cuenta (`pendiente_verificacion` / `activo` /
 Identidad **no** hace (y por diseño no debe hacerse aquí):
 
 - Emitir o validar JWT/sesiones/refresh tokens — eso es el contexto
-  **Acceso**, que **todavía no existe** en este repositorio (ver ADR 0009).
+  **Acceso** (ADR 0009), implementado desde ADR 0019/0020 — ver
+  `internal/acceso/README.md`. `GET /identidad/usuarios/{id}` ya exige un
+  token de acceso válido emitido por Acceso (ver más abajo); los otros
+  cuatro endpoints de Identidad siguen sin requerir token, porque son
+  precisamente el paso previo a obtener uno (alta de cuenta, verificación
+  de credenciales sin sesión, confirmación de correo).
 - Roles, organizaciones, membresías — contexto **Tenencia** (todavía no
   existe).
 - Rate limiting, captcha, score de riesgo — contexto **Confianza**. Desde
@@ -35,9 +40,13 @@ Identidad **no** hace (y por diseño no debe hacerse aquí):
 | `puertos.AutenticadorDeCredenciales` | Verificar correo+contraseña (sin emitir sesión) | `aplicacion.AutenticarUsuarioCasoDeUso` |
 | `puertos.ConsultorDeUsuarios` | Resolver datos mínimos de un usuario por ID | `aplicacion.ObtenerUsuarioCasoDeUso` |
 
-Ver `internal/identidad/puertos/entrada.go` para las firmas exactas. Cuando
-el contexto **Acceso** se implemente, es el consumidor previsto de
-`AutenticadorDeCredenciales` y `ConsultorDeUsuarios` (ver ADR 0009).
+Ver `internal/identidad/puertos/entrada.go` para las firmas exactas. Desde
+ADR 0019/0020, el contexto **Acceso** ya es el consumidor de
+`AutenticadorDeCredenciales` (en `IniciarSesion`, vía su ACL
+`internal/acceso/adaptadores/identidad/`) y de `ConsultorDeUsuarios` (en
+`RenovarSesion`, para revalidar en cada renovación que la cuenta siga
+`activa` — es el mecanismo por el que Acceso se entera de una suspensión
+sin depender de un broker de eventos). Ver `internal/acceso/README.md`.
 
 ## Cómo levantarlo en local
 
@@ -98,34 +107,41 @@ interactiva quedan disponibles en:
 - `GET /docs` — UI interactiva (Stoplight Elements), servida por Huma
   apuntando a `/openapi.json`.
 
-> **Nota de verificación honesta:** estas tres rutas son los valores por
-> defecto documentados de `huma.DefaultConfig` (así lo asume ya ADR 0006,
-> sección "Consecuencias": *"`/openapi.json` y la UI de docs en `/docs` se
-> generan solos"*) y `rutas.go` no los sobreescribe. Sin embargo, este
-> cierre de documentación **no pudo ejecutar `curl` contra el servicio real
-> corriendo**: el entorno del agente de documentación en esta sesión no
-> tenía una herramienta de shell disponible, solo lectura/escritura de
-> archivos. La verificación aquí es estática (lectura de `rutas.go`,
-> `dtos.go` y ADR 0006), no una comprobación en runtime. Antes de dar esto
-> por definitivamente cerrado, alguien con acceso a shell debería correr:
->
-> ```bash
-> make docker-up && make migrate-up && make run &
-> curl -s localhost:8080/openapi.json | jq '.paths | keys'
-> curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/docs
-> ```
->
-> y confirmar que `.paths` incluye `/identidad/usuarios`,
-> `/identidad/autenticaciones` y `/identidad/usuarios/{id}`, y que `/docs`
-> devuelve `200`.
+> **Nota de verificación en vivo (servidor real, Postgres+Redis reales, no
+> una lectura estática de código):** estas tres rutas son los valores por
+> defecto de `huma.DefaultConfig` y `rutas.go` no los sobreescribe. Desde
+> que Acceso se implementó (ADR 0019/0020) y se monta en el mismo
+> `*fiber.App`, hubo un riesgo real de colisión de rutas — ver la nota
+> equivalente en `internal/acceso/README.md` sobre el namespace propio que
+> Acceso le da a sus rutas de metadatos (`/acceso/openapi.json`,
+> `/acceso/docs`, `/acceso/schemas`) precisamente para no pisar estas. Ya
+> verificado: `GET /openapi.json` (raíz) sirve la spec de **Identidad**,
+> con `.paths` incluyendo `/identidad/usuarios`,
+> `/identidad/autenticaciones`, `/identidad/usuarios/{id}`,
+> `/identidad/verificaciones-correo` y
+> `/identidad/verificaciones-correo/reenvios` (dos endpoints que se
+> agregaron después del MVP original de 3 — ver el aviso más abajo); y
+> `GET /docs` (raíz) → `200`.
 
 ## Los 3 endpoints (MVP)
 
-Los tres son **públicos, sin token** (no existe todavía un emisor de
-tokens — contexto Acceso) y **sin rate limiting real** (el adaptador de
-Confianza es no-op hoy). Ambos hechos quedan también en el campo
-`Metadata` (`x-auth-nivel`, `x-rate-limit`) de cada operación en el
-OpenAPI generado — no son solo un comentario de código, ver `rutas.go`.
+> **Aviso de alcance:** este README documenta en detalle los 3 endpoints
+> del MVP original. `rutas.go` registra hoy **5** operaciones: además de
+> las tres de abajo, existen `POST /identidad/verificaciones-correo` y
+> `POST /identidad/verificaciones-correo/reenvios` (backlog §3.4/3.5 del
+> diseño, ya implementados). Esos dos quedan fuera del alcance de este
+> cierre de documentación — no se describen aquí con el mismo detalle
+> todavía; ver `rutas.go` y `internal/identidad/adaptadores/http/dtos.go`
+> mientras tanto.
+
+De los tres, **dos siguen públicos, sin token** (`POST /identidad/usuarios`
+y `POST /identidad/autenticaciones` — son el paso previo a obtener uno) y
+**sin rate limiting real** (el adaptador de Confianza es no-op hoy salvo
+que `REDIS_URL` esté configurado, ver ADR 0018 más arriba). El tercero,
+`GET /identidad/usuarios/{id}`, **ya no es público**: ver su sección más
+abajo. Estos hechos quedan también en el campo `Metadata` (`x-auth-nivel`,
+`x-rate-limit`) de cada operación en el OpenAPI generado — no son solo un
+comentario de código, ver `rutas.go`.
 
 Los ejemplos de request/response de abajo son los campos reales definidos
 en `internal/identidad/adaptadores/http/dtos.go`, ejercitados por
@@ -172,13 +188,18 @@ ninguno implementado (ver nota arriba).
 ### `POST /identidad/autenticaciones` — Verificar credenciales
 
 **Importante — leer antes de integrar:** este endpoint **NO emite token ni
-sesión**. Es exactamente lo que dice ADR 0009: Identidad verifica
-credenciales, el contexto **Acceso** (que no existe todavía en este
-repositorio) es quien debería llamar a este mismo caso de uso por puerto y,
-recién con el resultado, emitir un JWT. Hoy, llamar a este endpoint desde
-un frontend **solo sirve para validar que un correo+contraseña son
-correctos** — no autentica una sesión de verdad, no hay cookie, no hay
-`Authorization: Bearer` que emitir con la respuesta.
+sesión, y sigue sin emitirlo hoy**. Es exactamente lo que dice ADR 0009:
+Identidad verifica credenciales, y el contexto **Acceso** (implementado
+desde ADR 0019/0020, ver `internal/acceso/README.md`) es quien llama a
+este mismo caso de uso por puerto — vía su ACL
+`internal/acceso/adaptadores/identidad/autenticador.go` — y, recién con el
+resultado, emite el JWT. **El endpoint correcto para loguear desde un
+frontend es `POST /acceso/sesiones`, no este.** Llamar directamente a este
+endpoint de Identidad **solo sirve para validar que un correo+contraseña
+son correctos** — no autentica una sesión de verdad, no hay cookie, no hay
+`Authorization: Bearer` que emitir con la respuesta. Sigue existiendo y
+siendo público porque Acceso lo consume por puerto Go, no por HTTP —
+un frontend no debería llamarlo nunca directamente.
 
 Request:
 
@@ -225,14 +246,19 @@ en `test/integracion/http_flujo_test.go`. **No intentes distinguir "el
 correo no existe" de "la contraseña está mal" en el cliente a partir de
 esta respuesta — es intencionalmente indistinguible.**
 
-**Gap conocido del MVP — no hay forma de activar una cuenta todavía:** un
-usuario recién registrado con `POST /identidad/usuarios` queda en
-`pendiente_verificacion` y **no puede loguear** (`403` con
-`ErrCorreoNoVerificado`) hasta que alguien lo active manualmente. No existe
-ningún endpoint `POST /identidad/verificaciones-correo` ni similar — el
-caso de uso `VerificarCorreo` está en el backlog del diseño (sección 3.4)
-pero no se implementó en este hito. Hoy, la única forma de pasar a `activo`
-es una actualización directa en base de datos:
+**Gap del MVP original, cerrado desde entonces — dejado aquí como
+histórico:** en el MVP de 3 endpoints documentado en detalle en esta
+sección, un usuario recién registrado con `POST /identidad/usuarios`
+quedaba en `pendiente_verificacion` sin forma de activarse por API y
+**no podía loguear** (`403` con `ErrCorreoNoVerificado`). Eso ya no es
+así: `POST /identidad/verificaciones-correo` y
+`POST /identidad/verificaciones-correo/reenvios` existen (ver el aviso de
+alcance al inicio de esta sección) e implementan exactamente el caso de
+uso `VerificarCorreo` que estaba en backlog. Este README no los documenta
+todavía con el mismo nivel de detalle que los 3 de abajo. Como alternativa
+de solo-pruebas (la que usan hoy los tests de integración en vez de pasar
+por el flujo HTTP completo), la activación directa en base de datos sigue
+funcionando:
 
 ```sql
 UPDATE usuarios SET estado = 'activo' WHERE id = '<id_usuario>';
@@ -247,9 +273,36 @@ adaptador de Confianza es no-op — ver `internal/identidad/adaptadores/confianz
 
 ### `GET /identidad/usuarios/{id}` — Consultar un usuario por ID
 
+**Ya no es público.** Desde que el contexto Acceso quedó implementado
+(ADR 0019/0020), este endpoint exige un token de acceso Bearer válido —
+es exactamente el gancho que ADR 0019 §Consecuencias anunció: *"El
+middleware que consume `ValidadorDeAccesos` es lo que cierra el hueco
+documentado en `identidad/adaptadores/http/rutas.go`, donde
+`GET /identidad/usuarios/{id}` está público 'como placeholder hasta que
+exista el middleware de autenticación de Acceso'"*. El middleware que lo
+cierra es
+`internal/identidad/adaptadores/http/middleware_autenticacion.go`
+(`middlewareAutenticacionAcceso`), que consume
+`acceso/puertos.ValidadorDeAccesos` — el mismo puerto que el propio
+middleware de Acceso usa para sus rutas Bearer (§2.4 del diseño de
+Acceso). Obtén el token con `POST /acceso/sesiones` primero (ver
+`internal/acceso/README.md`).
+
+**Verificado en vivo contra el servidor real:** `GET
+/identidad/usuarios/{id}` sin cabecera `Authorization` → `401`; con
+`Authorization: Bearer <token_acceso>` válido → `200`.
+
+Cabecera obligatoria: `Authorization: Bearer <token_acceso>`.
+
 Query param opcional `solicitante_id`: identifica a quién pregunta, solo
 para la auditoría condicional (consultar el perfil propio no se audita).
-Vacío = llamada interna del sistema.
+Vacío = llamada interna del sistema. **Sin cambios de comportamiento**:
+`middlewareAutenticacionAcceso` solo autentica (verifica que haya un
+sujeto válido); no publica el `puertos.Acceso` resultante en el contexto
+ni lo usa para completar `solicitante_id` automáticamente — es
+deliberadamente la extensión mínima que cierra el hueco de autenticación
+sin tocar la lógica de negocio ya cerrada de Identidad. El cliente sigue
+enviando `solicitante_id` explícitamente si quiere que se audite.
 
 Response `200 OK`:
 
@@ -269,16 +322,27 @@ Errores posibles:
 
 | Status | Causa |
 |---|---|
+| `401` | Falta la cabecera `Authorization: Bearer <token>`, o el token es inválido/expirado/de una sesión revocada (mismo criterio de "un solo 401 genérico" que usa Acceso, ver `internal/acceso/README.md`) |
 | `404` | El `id` es un UUID sintácticamente válido pero no existe ningún usuario con ese ID |
 | `422` | El `id` no es un UUID válido (rechazado por la validación de formato de Huma antes de llegar al caso de uso) |
 
-**Este endpoint queda público a nivel de transporte a propósito, como
-placeholder**, hasta que exista el middleware de autenticación del
-contexto Acceso — la autorización real ("¿puede este solicitante ver a
-este usuario?") es de Tenencia/Acceso, no de Identidad. **No debe
-exponerse así en un despliegue real.**
+La **autorización** real ("¿puede este solicitante ver a este usuario?",
+más allá de estar autenticado) sigue sin existir: es de Tenencia, que
+todavía no existe. Hoy, cualquier sujeto con un token de acceso válido
+puede consultar cualquier `id`. **No es un placeholder de transporte** —
+la autenticación ya es real — pero tampoco es autorización completa.
 
-`aud` específico: ninguno. Rate limit especial: ninguno implementado.
+`aud` específico: ninguno (mismo `ACCESO_AUDIENCIA` fijo que cualquier
+token de acceso — ADR 0002, un solo producto). Rate limit especial:
+ninguno implementado.
+
+> `cmd/api/main.go` **siempre** pasa el validador real a
+> `identidadhttp.RegistrarRutas`. El parámetro `validador` puede ir `nil`
+> únicamente para no romper los tests de integración de este paquete que
+> ejercitan Identidad de forma aislada sin montar Acceso
+> (`test/integracion/entorno_test.go`): con `nil`, el endpoint se registra
+> sin el middleware, queda público, y se emite un `slog.Warn` explícito
+> ("NO USAR EN PRODUCCIÓN"). No es el camino real de arranque.
 
 ## Auditoría
 
@@ -295,4 +359,8 @@ de acciones: `docs/catalogos/acciones-auditoria.md`.
 - ADR 0009 (frontera Identidad/Acceso — por qué este contexto no emite
   tokens): `docs/adr/0009-frontera-identidad-acceso.md`
 - ADR 0017 (rol de login de runtime): `docs/adr/0017-rol-login-runtime-vs-rol-dueno-migraciones.md`
+- README del contexto Acceso (quien orquesta el login real y cierra el
+  hueco de autenticación de este contexto): `internal/acceso/README.md`
+- ADR 0019 (mecanismo de sesión de Acceso): `docs/adr/0019-mecanismo-sesion-jwt-refresco-rotatorio.md`
+- ADR 0020 (algoritmo de firma y rotación de llaves de Acceso): `docs/adr/0020-algoritmo-firma-jwt-rotacion-llaves.md`
 - Índice completo de ADRs: `docs/adr/README.md`

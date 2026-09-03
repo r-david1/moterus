@@ -1,11 +1,11 @@
 # Diseño — Bounded Context **Acceso**
 
-> Estado: propuesta de diseño (sin código Go). Autor: agente `arquitecto-ddd-hexagonal`.
-> Fecha: 2026-08-31.
+> Estado: propuesta de diseño **implementada**. Autor original: agente `arquitecto-ddd-hexagonal`.
+> Fecha del diseño: 2026-08-31. Fecha de esta actualización de estado: 2026-09-03.
 > Alcance: entidades, value objects, agregados, puertos, casos de uso, invariantes, eventos, migraciones y endpoints del contexto **Acceso**.
-> Depende de: ADR 0002 (un solo producto), ADR 0004 (nombres de tablas), ADR 0005 (auditoría forense hash-chained), ADR 0006 (Huma v2), ADR 0007 (español en dominio/aplicación/puertos), **ADR 0009 (frontera Identidad/Acceso — no se reabre)**, ADR 0017 (rol de login acotado: toda tabla nueva necesita `GRANT` explícito), ADR 0018 (Confianza + Redis), **ADR 0019 (mecanismo de sesión — escrito junto con este documento)**.
-> Consumidores: **todos los contextos** (el middleware de validación de token de Acceso es el que autentica cualquier endpoint no público), **Auditoría** (recibe los eventos), **Tenencia** (cuando exista, es quien dirá *qué puede hacer* el sujeto que Acceso identificó).
-> Estado del código hoy: `internal/acceso/` es solo esqueleto (`{dominio,aplicacion,puertos,adaptadores/{http,postgres}}/doc.go`, comentarios de placeholder). Este documento es el paso previo a `go-dominio`.
+> Depende de: ADR 0002 (un solo producto), ADR 0004 (nombres de tablas), ADR 0005 (auditoría forense hash-chained), ADR 0006 (Huma v2), ADR 0007 (español en dominio/aplicación/puertos), **ADR 0009 (frontera Identidad/Acceso — no se reabre)**, ADR 0017 (rol de login acotado: toda tabla nueva necesita `GRANT` explícito), ADR 0018 (Confianza + Redis), **ADR 0019 (mecanismo de sesión)**, **ADR 0020 (algoritmo de firma y rotación de llaves)**.
+> Consumidores: **todos los contextos** (el middleware de validación de token de Acceso es el que autentica cualquier endpoint no público — hoy con un consumidor real: `identidad/adaptadores/http/middleware_autenticacion.go`), **Auditoría** (recibe los eventos), **Tenencia** (cuando exista, es quien dirá *qué puede hacer* el sujeto que Acceso identificó).
+> Estado del código hoy: **implementado** — dominio (`internal/acceso/dominio`), aplicación (`internal/acceso/aplicacion`), puertos (`internal/acceso/puertos`), migraciones (`db/migraciones/000006`-`000008`) e infraestructura completa (`internal/acceso/adaptadores/{http,postgres,jwt,redis,identidad,confianza,auditoria,eventos,cripto}`) ya existen y están montados en `cmd/api/main.go`. Ver `internal/acceso/README.md` para el punto de entrada operativo (cómo levantarlo, los 7 endpoints, configuración). Este documento sigue siendo la referencia normativa de diseño; no se reescribió para narrar la implementación línea por línea — donde el código diverge de algo escrito aquí, el código es la fuente de verdad y el README lo señala.
 
 ---
 

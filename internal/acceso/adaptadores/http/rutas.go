@@ -24,7 +24,20 @@ const prefijo = "/acceso"
 func RegistrarRutas(app *fiber.App, m *ManejadorAcceso, validador puertos.ValidadorDeAccesos) huma.API {
 	app.Use(middlewareOrigenSolicitud)
 
-	api := humafiber.NewV2(app, huma.DefaultConfig("Acceso", "0.1.0"))
+	// Rutas de metadatos (OpenAPI/docs/schemas) con prefijo propio: Acceso e
+	// Identidad montan cada uno su propia instancia de huma.API sobre el
+	// mismo *fiber.App (ver cmd/api/main.go), y humafiber.NewV2 registra
+	// /openapi.json, /openapi.yaml, /docs y /schemas/* con
+	// huma.DefaultConfig sin prefijo. Sin este override, las dos
+	// instancias compiten por las mismas rutas exactas y Fiber sirve solo
+	// la primera registrada (Acceso, en main.go) — la spec/docs de
+	// Identidad quedaban silenciosamente inalcanzables. Corregido dándole
+	// a cada contexto su propio namespace de metadatos.
+	cfgAcceso := huma.DefaultConfig("Acceso", "0.1.0")
+	cfgAcceso.OpenAPIPath = prefijo + "/openapi"
+	cfgAcceso.DocsPath = prefijo + "/docs"
+	cfgAcceso.SchemasPath = prefijo + "/schemas"
+	api := humafiber.NewV2(app, cfgAcceso)
 
 	metaPublico := map[string]any{
 		"x-auth-nivel": "publico-sin-token",
