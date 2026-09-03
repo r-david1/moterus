@@ -47,6 +47,26 @@ type Config struct {
 	// de Cloudflare (env TURNSTILE_VERIFY_URL) — pensado para tests con un
 	// httptest.Server local, nunca hace falta en producción.
 	TurnstileVerifyURL string
+	// AccesoEmisor es el claim `iss` de los tokens de acceso (env
+	// ACCESO_EMISOR, ADR 0020). Sin default aplicado aquí a propósito: la
+	// decisión de fallar el arranque en producción o usar un valor de
+	// desarrollo vive en cmd/api/main.go (esta paquetería no tiene reglas
+	// de negocio ni de arranque).
+	AccesoEmisor string
+	// AccesoAudiencia es el claim `aud` fijo de los tokens de acceso (env
+	// ACCESO_AUDIENCIA, ADR 0002: un solo producto ⇒ audiencia fija).
+	AccesoAudiencia string
+	// AccesoLlaveFirma es la llave privada activa de firma de tokens de
+	// acceso (env ACCESO_LLAVE_FIRMA): PEM (PKCS8) o seed/llave Ed25519 en
+	// base64 (ADR 0020 §4). Sin ella en APP_ENV=production el proceso api
+	// no arranca; fuera de producción se genera una llave efímera con WARN.
+	AccesoLlaveFirma string
+	// AccesoLlavesVerificacionPrevias es la lista separada por comas de
+	// llaves de verificación previas (env
+	// ACCESO_LLAVES_VERIFICACION_PREVIAS, ADR 0020 §4), cada una en el
+	// mismo formato que AccesoLlaveFirma. Se mantienen publicadas en el
+	// JWKS durante una ventana de rotación (≥ vidaTokenAcceso).
+	AccesoLlavesVerificacionPrevias string
 }
 
 // CargarDesdeEntorno construye un Config leyendo variables de entorno,
@@ -59,13 +79,17 @@ func CargarDesdeEntorno() (Config, error) {
 	}
 
 	return Config{
-		Puerto:                   puerto,
-		EntornoApp:               valorODefecto("APP_ENV", "development"),
-		URLBaseDeDatos:           os.Getenv("DATABASE_URL"),
-		URLBaseDeDatosAplicacion: os.Getenv("DATABASE_URL_APLICACION"),
-		URLRedis:                 os.Getenv("REDIS_URL"),
-		TurnstileSecretKey:       os.Getenv("TURNSTILE_SECRET_KEY"),
-		TurnstileVerifyURL:       valorODefecto("TURNSTILE_VERIFY_URL", ""),
+		Puerto:                          puerto,
+		EntornoApp:                      valorODefecto("APP_ENV", "development"),
+		URLBaseDeDatos:                  os.Getenv("DATABASE_URL"),
+		URLBaseDeDatosAplicacion:        os.Getenv("DATABASE_URL_APLICACION"),
+		URLRedis:                        os.Getenv("REDIS_URL"),
+		TurnstileSecretKey:              os.Getenv("TURNSTILE_SECRET_KEY"),
+		TurnstileVerifyURL:              valorODefecto("TURNSTILE_VERIFY_URL", ""),
+		AccesoEmisor:                    os.Getenv("ACCESO_EMISOR"),
+		AccesoAudiencia:                 os.Getenv("ACCESO_AUDIENCIA"),
+		AccesoLlaveFirma:                os.Getenv("ACCESO_LLAVE_FIRMA"),
+		AccesoLlavesVerificacionPrevias: os.Getenv("ACCESO_LLAVES_VERIFICACION_PREVIAS"),
 	}, nil
 }
 

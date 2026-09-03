@@ -1,11 +1,14 @@
 package http
 
 import (
+	"log/slog"
 	"net/http"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humafiber"
 	"github.com/gofiber/fiber/v2"
+
+	accesopuertos "github.com/r-david1/moterus/internal/acceso/puertos"
 )
 
 // prefijo es el prefijo de ruta de todos los endpoints de Identidad.
@@ -25,7 +28,16 @@ const prefijo = "/identidad"
 // adaptador. Se deja constancia de ambos hechos en Metadata de cada
 // operación para que quede en el OpenAPI generado, no solo en un
 // comentario de Go.
-func RegistrarRutas(app *fiber.App, m *ManejadorIdentidad) huma.API {
+// validador es el acceso/puertos.ValidadorDeAccesos que
+// middlewareAutenticacionAcceso (middleware_autenticacion.go) consume para
+// cerrar el hueco de GET /identidad/usuarios/{id} (ADR 0019
+// §Consecuencias). Puede ir nil ÚNICAMENTE para no romper los tests de
+// integración existentes de este paquete, que hoy ejercitan Identidad de
+// forma aislada sin montar Acceso (test/integracion/entorno_test.go): con
+// nil, el endpoint se registra sin el middleware y queda público, igual
+// que antes de esta migración. cmd/api/main.go SIEMPRE debe pasar el
+// validador real.
+func RegistrarRutas(app *fiber.App, m *ManejadorIdentidad, validador accesopuertos.ValidadorDeAccesos) huma.API {
 	app.Use(middlewareOrigenSolicitud)
 
 	api := humafiber.NewV2(app, huma.DefaultConfig("Identidad", "0.1.0"))
@@ -59,18 +71,28 @@ func RegistrarRutas(app *fiber.App, m *ManejadorIdentidad) huma.API {
 		Metadata: metadatosEndpointPublico,
 	}, m.Autenticar)
 
-	huma.Register(api, huma.Operation{
+	opObtenerUsuario := huma.Operation{
 		OperationID: "identidad-obtener-usuario",
 		Method:      http.MethodGet,
 		Path:        prefijo + "/usuarios/{id}",
 		Summary:     "Consultar un usuario por ID",
 		Description: "Devuelve VistaUsuario (nunca el agregado ni el hash de contraseña). La autorización " +
-			"real (¿puede el solicitante ver a este usuario?) es de Tenencia/Acceso, fuera de alcance: " +
-			"este endpoint queda público a nivel de transporte a propósito, como placeholder hasta que " +
-			"exista el middleware de autenticación de Acceso — no debe exponerse así en producción.",
-		Tags:     []string{"Identidad"},
-		Metadata: metadatosEndpointPublico,
-	}, m.ObtenerPorID)
+			"real (¿puede el solicitante ver a este usuario?) es de Tenencia, fuera de alcance: la " +
+			"AUTENTICACIÓN (¿quién pregunta?) ya no está pendiente — exige un token de acceso Bearer válido " +
+			"(ADR 0019 §Consecuencias: este es el gancho que cierra el hueco que dejó ADR 0009).",
+		Tags: []string{"Identidad"},
+		Metadata: map[string]any{
+			"x-auth-nivel": "bearer-acceso",
+		},
+	}
+	if validador != nil {
+		opObtenerUsuario.Middlewares = huma.Middlewares{middlewareAutenticacionAcceso(api, validador)}
+	} else {
+		opObtenerUsuario.Metadata = metadatosEndpointPublico
+		slog.Warn("identidad/adaptadores/http: RegistrarRutas se llamó sin validador de Acceso — " +
+			"GET /identidad/usuarios/{id} queda público, sin autenticación. NO USAR EN PRODUCCIÓN.")
+	}
+	huma.Register(api, opObtenerUsuario, m.ObtenerPorID)
 
 	huma.Register(api, huma.Operation{
 		OperationID: "identidad-verificar-correo",

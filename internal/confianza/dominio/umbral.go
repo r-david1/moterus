@@ -32,10 +32,20 @@ type LimitesPorAccion struct {
 // registro (alta legítima en ráfaga, p. ej. una oficina detrás de un NAT).
 type PoliticaLimites map[Accion]LimitesPorAccion
 
-// PoliticaLimitesPorDefecto devuelve los umbrales del ADR 0018:
-//   - login:                IP 5/1min   · cuenta 5/15min
-//   - registro:             IP 10/1min  · cuenta 3/15min
-//   - reenvio_verificacion: IP 5/1min   · cuenta 3/15min
+// PoliticaLimitesPorDefecto devuelve los umbrales del ADR 0018, más los dos
+// que agrega el contexto Acceso (§11.2 del diseño de Acceso,
+// docs/design/acceso-bounded-context.md — no calibrados contra tráfico
+// real, igual criterio que los de Identidad):
+//   - login:                    IP 5/1min   · cuenta 5/15min
+//   - registro:                 IP 10/1min  · cuenta 3/15min
+//   - reenvio_verificacion:     IP 5/1min   · cuenta 3/15min
+//   - renovacion_sesion:        IP 30/1min  · cuenta("sesion:<id>" o
+//     "ip:<ip>", ver acceso/adaptadores/confianza) 10/1min — más
+//     permisivo que login porque una renovación ocurre en el camino feliz
+//     cada `vidaTokenAcceso` (10 min por defecto) por cada sesión activa
+//     de un usuario, y una oficina tras NAT con 20 usuarios activos supera
+//     3/min de forma perfectamente legítima.
+//   - cierre_masivo_sesiones:   IP 5/1min   · cuenta("usuario:<id>") 3/15min
 func PoliticaLimitesPorDefecto() PoliticaLimites {
 	return PoliticaLimites{
 		AccionLogin: {
@@ -47,6 +57,14 @@ func PoliticaLimitesPorDefecto() PoliticaLimites {
 			Cuenta: Umbral{Limite: 3, Ventana: 15 * time.Minute},
 		},
 		AccionReenvioVerificacion: {
+			IP:     Umbral{Limite: 5, Ventana: time.Minute},
+			Cuenta: Umbral{Limite: 3, Ventana: 15 * time.Minute},
+		},
+		AccionRenovacionSesion: {
+			IP:     Umbral{Limite: 30, Ventana: time.Minute},
+			Cuenta: Umbral{Limite: 10, Ventana: time.Minute},
+		},
+		AccionCierreMasivoSesiones: {
 			IP:     Umbral{Limite: 5, Ventana: time.Minute},
 			Cuenta: Umbral{Limite: 3, Ventana: 15 * time.Minute},
 		},

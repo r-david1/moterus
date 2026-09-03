@@ -15,4 +15,13 @@ const (
 	AccionLogin               Accion = "login"
 	AccionRegistro            Accion = "registro"
 	AccionReenvioVerificacion Accion = "reenvio_verificacion"
+	// AccionRenovacionSesion y AccionCierreMasivoSesiones son las dos
+	// acciones que agrega el contexto Acceso (§0 y §11.2 del diseño de
+	// Acceso, docs/design/acceso-bounded-context.md): renovación de sesión
+	// (RenovarSesion evalúa Confianza porque Identidad no participa en ese
+	// flujo) y cierre masivo de sesiones (operación destructiva que un
+	// atacante con un token robado podría usar para molestar a la
+	// víctima). Identidad NO usa estas dos acciones.
+	AccionRenovacionSesion     Accion = "renovacion_sesion"
+	AccionCierreMasivoSesiones Accion = "cierre_masivo_sesiones"
 )

@@ -1,10 +1,11 @@
 // Comando api arranca el servidor HTTP de Auth-as-a-Service. Además del
 // health check de infraestructura, monta el bounded context Identidad
-// completo: pool pgx, adaptadores concretos (postgres, cripto, auditoria,
-// eventos, confianza, notificaciones), los cinco casos de uso de
-// aplicacion (registro, autenticación, consulta, verificación de correo y
-// reenvío de verificación), y sus cinco endpoints HTTP (Huma v2 sobre
-// Fiber v2 vía humafiber.NewV2).
+// completo (pool pgx, adaptadores concretos, sus cinco casos de uso y sus
+// cinco endpoints HTTP) y el bounded context Acceso completo (ADR 0019/
+// 0020: sesión autoritativa en Postgres, JWT de acceso EdDSA/Ed25519 de
+// vida corta, refresco opaco rotatorio, JWKS público), que es quien cierra
+// el hueco de autenticación que Identidad dejó documentado como
+// placeholder en GET /identidad/usuarios/{id}.
 package main
 
 import (
@@ -12,13 +13,30 @@ import (
 	"log"
 	"log/slog"
 	"strconv"
+	"strings"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	accesocripto "github.com/r-david1/moterus/internal/acceso/adaptadores/cripto"
+	accesodominio "github.com/r-david1/moterus/internal/acceso/dominio"
+
+	accesoauditoria "github.com/r-david1/moterus/internal/acceso/adaptadores/auditoria"
+	accesoconfianza "github.com/r-david1/moterus/internal/acceso/adaptadores/confianza"
+	accesoeventos "github.com/r-david1/moterus/internal/acceso/adaptadores/eventos"
+	accesohttp "github.com/r-david1/moterus/internal/acceso/adaptadores/http"
+	accesoidentidad "github.com/r-david1/moterus/internal/acceso/adaptadores/identidad"
+	accesojwt "github.com/r-david1/moterus/internal/acceso/adaptadores/jwt"
+	accesopostgres "github.com/r-david1/moterus/internal/acceso/adaptadores/postgres"
+	accesoredis "github.com/r-david1/moterus/internal/acceso/adaptadores/redis"
+	accesoaplicacion "github.com/r-david1/moterus/internal/acceso/aplicacion"
+	accesopuertos "github.com/r-david1/moterus/internal/acceso/puertos"
 
 	confianzaredis "github.com/r-david1/moterus/internal/confianza/adaptadores/redis"
 	"github.com/r-david1/moterus/internal/confianza/adaptadores/turnstile"
 	confianzaaplicacion "github.com/r-david1/moterus/internal/confianza/aplicacion"
 	confianzapuertos "github.com/r-david1/moterus/internal/confianza/puertos"
+
 	"github.com/r-david1/moterus/internal/identidad/adaptadores/auditoria"
 	identidadconfianza "github.com/r-david1/moterus/internal/identidad/adaptadores/confianza"
 	"github.com/r-david1/moterus/internal/identidad/adaptadores/cripto"
@@ -27,7 +45,8 @@ import (
 	"github.com/r-david1/moterus/internal/identidad/adaptadores/notificaciones"
 	identidadpostgres "github.com/r-david1/moterus/internal/identidad/adaptadores/postgres"
 	"github.com/r-david1/moterus/internal/identidad/aplicacion"
-	"github.com/r-david1/moterus/internal/identidad/puertos"
+	identidadpuertos "github.com/r-david1/moterus/internal/identidad/puertos"
+
 	"github.com/r-david1/moterus/internal/plataforma/bd"
 	"github.com/r-david1/moterus/internal/plataforma/cache"
 	"github.com/r-david1/moterus/internal/plataforma/configuracion"
@@ -56,19 +75,10 @@ func main() {
 		})
 	})
 
-	// Bug encontrado por el agente de calidad/testing (ver internal/identidad,
-	// tarea de tests de integración): esta condición solo miraba
-	// cfg.URLBaseDeDatos (DATABASE_URL), el DSN documentado como "solo para
-	// herramientas administrativas (el migrador)" (ver configuracion.go). Un
-	// despliegue que siguiera al pie de la letra ADR 0017 y solo definiera
-	// DATABASE_URL_APLICACION (el DSN de runtime recomendado, rol_login_identidad)
-	// sin definir también DATABASE_URL dejaba el contexto Identidad sin montar
-	// silenciosamente — con el proceso igualmente arriba y /health respondiendo
-	// 200, lo que hacía el fallo difícil de detectar en un despliegue real.
 	if cfg.URLBaseDeDatos == "" && cfg.URLBaseDeDatosAplicacion == "" {
-		log.Println("api: ni DATABASE_URL ni DATABASE_URL_APLICACION están definidos — solo se expone /health, el contexto Identidad no se monta")
+		log.Println("api: ni DATABASE_URL ni DATABASE_URL_APLICACION están definidos — solo se expone /health, los contextos Identidad y Acceso no se montan")
 	} else {
-		montarIdentidad(ctx, app, cfg)
+		montarIdentidadYAcceso(ctx, app, cfg)
 	}
 
 	addr := ":" + strconv.Itoa(cfg.Puerto)
@@ -78,11 +88,13 @@ func main() {
 	}
 }
 
-// montarIdentidad conecta el pool pgx y ensambla los adaptadores concretos
-// de Identidad detrás de sus puertos, construye los tres casos de uso de
-// aplicacion (que sigue cerrada: aquí solo se inyectan sus dependencias por
-// interfaz, nunca se modifica su código) y registra las rutas HTTP.
-func montarIdentidad(ctx context.Context, app *fiber.App, cfg configuracion.Config) {
+// montarIdentidadYAcceso conecta el pool pgx (compartido por ambos
+// contextos: cada uno con sus propios adaptadores de repositorio y su
+// propia UnidadDeTrabajo, ADR 0017), ensambla Identidad (sin registrar
+// todavía sus rutas: el endpoint GET /identidad/usuarios/{id} necesita el
+// puertos.ValidadorDeAccesos que solo existe una vez montado Acceso),
+// ensambla Acceso completo, y por último registra las rutas de ambos.
+func montarIdentidadYAcceso(ctx context.Context, app *fiber.App, cfg configuracion.Config) {
 	dsn := cfg.URLBaseDeDatosAplicacion
 	if dsn == "" {
 		log.Println("api: ALERTA — DATABASE_URL_APLICACION no definido, usando DATABASE_URL (rol dueño/superusuario). " +
@@ -98,99 +110,208 @@ func montarIdentidad(ctx context.Context, app *fiber.App, cfg configuracion.Conf
 
 	relojReal := reloj.NuevoReal()
 
+	// riesgo es el motor de Confianza (ADR 0018) compartido por los ACL de
+	// Identidad y de Acceso: un único LimitadorTasa/VerificadorCaptcha
+	// contra el mismo Redis, cada contexto lo envuelve detrás de su propio
+	// puerto EvaluadorConfianza. nil si REDIS_URL no está definido (ambos
+	// contextos caen a su propio no-op, cada uno con su WARN de arranque).
+	riesgo := construirEvaluadorDeRiesgo(cfg)
+
+	// --- Identidad: adaptadores y casos de uso (rutas al final) -----------
+
 	repositorioUsuarios := identidadpostgres.NuevoRepositorioUsuarios(pool)
 	repositorioTokensVerificacion := identidadpostgres.NuevoRepositorioTokensVerificacion(pool)
-	unidadDeTrabajo := identidadpostgres.NuevaUnidadDeTrabajo(pool)
-	generadorIDs := identidadpostgres.NuevoGeneradorIDs()
+	unidadDeTrabajoIdentidad := identidadpostgres.NuevaUnidadDeTrabajo(pool)
+	generadorIDsIdentidad := identidadpostgres.NuevoGeneradorIDs()
 
 	hasher := cripto.NuevoHasherArgon2id()
 	verificadorFiltradas := cripto.NuevoVerificadorHIBP()
-	generadorTokens := cripto.NuevoGeneradorTokens()
+	generadorTokensIdentidad := cripto.NuevoGeneradorTokens()
 
-	registroAuditoria := auditoria.NuevoRegistroAuditoria(pool)
-	publicadorEventos := eventos.NuevoPublicadorLog(nil)
-	evaluadorConfianza := construirEvaluadorConfianza(cfg)
+	registroAuditoriaIdentidad := auditoria.NuevoRegistroAuditoria(pool)
+	publicadorEventosIdentidad := eventos.NuevoPublicadorLog(nil)
+	evaluadorConfianzaIdentidad := construirEvaluadorConfianzaIdentidad(riesgo)
 	notificadorCorreo := notificaciones.NuevoNotificadorCorreoLog(nil)
 
 	registrador := aplicacion.NuevoRegistrarUsuarioCasoDeUso(
-		repositorioUsuarios,
-		hasher,
-		verificadorFiltradas,
-		evaluadorConfianza,
-		registroAuditoria,
-		publicadorEventos,
-		relojReal,
-		generadorIDs,
-		unidadDeTrabajo,
-		generadorTokens,
-		repositorioTokensVerificacion,
-		notificadorCorreo,
+		repositorioUsuarios, hasher, verificadorFiltradas, evaluadorConfianzaIdentidad,
+		registroAuditoriaIdentidad, publicadorEventosIdentidad, relojReal, generadorIDsIdentidad, unidadDeTrabajoIdentidad,
+		generadorTokensIdentidad, repositorioTokensVerificacion, notificadorCorreo,
 	)
-	autenticador := aplicacion.NuevoAutenticarUsuarioCasoDeUso(
-		repositorioUsuarios,
-		hasher,
-		evaluadorConfianza,
-		registroAuditoria,
-		publicadorEventos,
-		relojReal,
-		unidadDeTrabajo,
+	autenticadorIdentidad := aplicacion.NuevoAutenticarUsuarioCasoDeUso(
+		repositorioUsuarios, hasher, evaluadorConfianzaIdentidad,
+		registroAuditoriaIdentidad, publicadorEventosIdentidad, relojReal, unidadDeTrabajoIdentidad,
 	)
-	consultor := aplicacion.NuevoObtenerUsuarioCasoDeUso(
-		repositorioUsuarios,
-		registroAuditoria,
-		relojReal,
-	)
+	consultorIdentidad := aplicacion.NuevoObtenerUsuarioCasoDeUso(repositorioUsuarios, registroAuditoriaIdentidad, relojReal)
 	verificadorCorreo := aplicacion.NuevoVerificarCorreoCasoDeUso(
-		repositorioUsuarios,
-		repositorioTokensVerificacion,
-		registroAuditoria,
-		publicadorEventos,
-		relojReal,
-		unidadDeTrabajo,
+		repositorioUsuarios, repositorioTokensVerificacion, registroAuditoriaIdentidad, publicadorEventosIdentidad, relojReal, unidadDeTrabajoIdentidad,
 	)
 	reenviadorVerificacion := aplicacion.NuevoReenviarVerificacionCasoDeUso(
-		repositorioUsuarios,
-		generadorTokens,
-		repositorioTokensVerificacion,
-		notificadorCorreo,
-		relojReal,
+		repositorioUsuarios, generadorTokensIdentidad, repositorioTokensVerificacion, notificadorCorreo, relojReal,
 	)
 
-	manejador := identidadhttp.NuevoManejadorIdentidad(registrador, autenticador, consultor, verificadorCorreo, reenviadorVerificacion, evaluadorConfianza)
-	identidadhttp.RegistrarRutas(app, manejador)
+	manejadorIdentidad := identidadhttp.NuevoManejadorIdentidad(
+		registrador, autenticadorIdentidad, consultorIdentidad, verificadorCorreo, reenviadorVerificacion, evaluadorConfianzaIdentidad,
+	)
+
+	// --- Acceso: adaptadores, casos de uso y rutas -------------------------
+
+	validadorAcceso, manejadorAcceso := montarAcceso(cfg, pool, relojReal, autenticadorIdentidad, consultorIdentidad, riesgo)
+	accesohttp.RegistrarRutas(app, manejadorAcceso, validadorAcceso)
+
+	// --- Identidad: rutas (ahora sí, con el validador de Acceso) ----------
+
+	identidadhttp.RegistrarRutas(app, manejadorIdentidad, validadorAcceso)
 
 	estadoConfianza := "confianza-noop"
-	if cfg.URLRedis != "" {
+	if riesgo != nil {
 		estadoConfianza = "confianza-real(redis+turnstile)"
 	}
 	log.Printf("api: contexto Identidad montado (postgres, argon2id, hibp, auditoria, eventos-log, %s, notificador-correo-log)", estadoConfianza)
 }
 
-// construirEvaluadorConfianza decide entre EvaluadorConfianzaNoOp y
-// EvaluadorConfianzaReal según si cfg.URLRedis está definida (ADR 0018).
-// Sin Redis configurado se mantiene el comportamiento previo exacto (noop
-// con WARN de arranque) — no rompe ningún despliegue de desarrollo
-// existente que no haya seteado REDIS_URL todavía. Con Redis configurado,
-// se monta el motor real de rate limiting (Confianza/Redis) y de captcha
-// (Cloudflare Turnstile, ADR 0003) detrás del mismo puerto
-// puertos.EvaluadorConfianza — Identidad no distingue cuál de los dos
-// está montado.
-func construirEvaluadorConfianza(cfg configuracion.Config) puertos.EvaluadorConfianza {
-	if cfg.URLRedis == "" {
-		return identidadconfianza.NuevoEvaluadorConfianzaNoOp(nil)
+// montarAcceso ensambla el bounded context Acceso completo (ADR 0019/0020)
+// y devuelve el puertos.ValidadorDeAccesos (para que Identidad cierre su
+// hueco de autenticación) y el manejador HTTP ya listo para registrar sus
+// propias rutas. autenticadorIdentidad/consultorIdentidad son los casos de
+// uso de Identidad detrás de los ACL de acceso/adaptadores/identidad — el
+// único paquete de Acceso autorizado a importar identidad/puertos
+// (INV-ACC-19).
+func montarAcceso(
+	cfg configuracion.Config,
+	pool *pgxpool.Pool,
+	relojReal reloj.Real,
+	autenticadorIdentidad identidadpuertos.AutenticadorDeCredenciales,
+	consultorIdentidad identidadpuertos.ConsultorDeUsuarios,
+	riesgo confianzapuertos.EvaluadorDeRiesgo,
+) (accesopuertos.ValidadorDeAccesos, *accesohttp.ManejadorAcceso) {
+	politica := accesodominio.PoliticaSesionPorDefecto()
+
+	sesiones := accesopostgres.NuevoRepositorioSesiones(pool)
+	uow := accesopostgres.NuevaUnidadDeTrabajo(pool)
+	generadorIDs := accesopostgres.NuevoGeneradorIDs()
+	generadorRefrescos := accesocripto.NuevoGeneradorTokensRefresco()
+	registroAuditoria := accesoauditoria.NuevoRegistroAuditoria(pool)
+	publicadorEventos := accesoeventos.NuevoPublicadorLog(nil)
+
+	emisor := exigirEnProduccionOAdvertir(cfg, "ACCESO_EMISOR", cfg.AccesoEmisor, "https://accesos.moterus.local")
+	audiencia := exigirEnProduccionOAdvertir(cfg, "ACCESO_AUDIENCIA", cfg.AccesoAudiencia, "moterus")
+
+	llaveFirma := cfg.AccesoLlaveFirma
+	if llaveFirma == "" {
+		if cfg.EntornoApp == "production" {
+			log.Fatalf("api: ACCESO_LLAVE_FIRMA no está definida en APP_ENV=production — un servicio de " +
+				"autenticación que no puede firmar tokens no tiene nada que hacer sirviendo tráfico (ADR 0020 §4).")
+		}
+		efimera, errLlave := accesojwt.GenerarLlaveEfimera()
+		if errLlave != nil {
+			log.Fatalf("api: no se pudo generar la llave de firma efímera de Acceso: %v", errLlave)
+		}
+		llaveFirma = efimera
+		log.Println("api: ALERTA — ACCESO_LLAVE_FIRMA no está definida, usando una llave Ed25519 efímera " +
+			"generada en memoria. Todos los tokens de acceso firmados mueren al reiniciar el proceso. " +
+			"No usar así en producción (ADR 0020 §4).")
+	}
+	var llavesPrevias []string
+	if cfg.AccesoLlavesVerificacionPrevias != "" {
+		llavesPrevias = strings.Split(cfg.AccesoLlavesVerificacionPrevias, ",")
+	}
+	llavero, err := accesojwt.NuevoLlavero(llaveFirma, llavesPrevias)
+	if err != nil {
+		log.Fatalf("api: no se pudo construir el llavero de firma de Acceso (ACCESO_LLAVE_FIRMA/ACCESO_LLAVES_VERIFICACION_PREVIAS): %v", err)
+	}
+	firmador := accesojwt.NuevoFirmador(llavero, emisor, audiencia, politica.ToleranciaReloj())
+
+	var listaRevocacion accesopuertos.ListaRevocacion
+	if cfg.URLRedis != "" {
+		clienteRedis, errRedis := cache.NuevoClienteRedis(cfg.URLRedis)
+		if errRedis != nil {
+			log.Fatalf("api: REDIS_URL definido pero inválido (Acceso): %v", errRedis)
+		}
+		listaRevocacion = accesoredis.NuevaListaRevocacion(clienteRedis)
+	} else {
+		listaRevocacion = accesoredis.NuevaListaRevocacionNoOp()
 	}
 
+	var evaluadorConfianzaAcceso accesopuertos.EvaluadorConfianza
+	if riesgo != nil {
+		evaluadorConfianzaAcceso = accesoconfianza.NuevoEvaluadorConfianzaReal(riesgo)
+	} else {
+		evaluadorConfianzaAcceso = accesoconfianza.NuevoEvaluadorConfianzaNoOp(nil)
+	}
+
+	autenticadorACL := accesoidentidad.NuevoAutenticadorIdentidad(autenticadorIdentidad)
+	consultorEstadoSujeto := accesoidentidad.NuevoConsultorEstadoSujeto(consultorIdentidad)
+
+	iniciador := accesoaplicacion.NuevoIniciarSesionCasoDeUso(
+		autenticadorACL, sesiones, generadorRefrescos, firmador, listaRevocacion,
+		registroAuditoria, publicadorEventos, relojReal, generadorIDs, uow, politica, emisor, audiencia,
+	)
+	renovador := accesoaplicacion.NuevoRenovarSesionCasoDeUso(
+		evaluadorConfianzaAcceso, sesiones, generadorRefrescos, firmador, consultorEstadoSujeto, listaRevocacion,
+		registroAuditoria, relojReal, generadorIDs, uow, politica, emisor, audiencia,
+	)
+	validador := accesoaplicacion.NuevoValidarAccesoCasoDeUso(firmador, listaRevocacion, sesiones, registroAuditoria, relojReal)
+	cerrador := accesoaplicacion.NuevoCerrarSesionCasoDeUso(sesiones, evaluadorConfianzaAcceso, listaRevocacion, registroAuditoria, relojReal, uow, politica)
+	consultorSesiones := accesoaplicacion.NuevoListarSesionesCasoDeUso(sesiones)
+
+	manejador := accesohttp.NuevoManejadorAcceso(iniciador, renovador, cerrador, consultorSesiones, firmador)
+
+	estadoRedis := "sin-redis(lista-revocacion-degradada-hasta-vida-token-acceso)"
+	if cfg.URLRedis != "" {
+		estadoRedis = "redis(lista-revocacion-inmediata)"
+	}
+	estadoConfianza := "confianza-noop"
+	if riesgo != nil {
+		estadoConfianza = "confianza-real(redis+turnstile)"
+	}
+	log.Printf("api: contexto Acceso montado (postgres, jwx/ed25519 kid=%s, %s, %s, auditoria, eventos-log)",
+		llavero.KIDActivo(), estadoRedis, estadoConfianza)
+
+	return validador, manejador
+}
+
+// exigirEnProduccionOAdvertir implementa el fail-closed de ADR 0020
+// (Consecuencias: "Configuración nueva obligatoria en producción:
+// ACCESO_LLAVE_FIRMA, ACCESO_EMISOR, ACCESO_AUDIENCIA") para los dos
+// valores que sí admiten un default operable fuera de producción.
+func exigirEnProduccionOAdvertir(cfg configuracion.Config, nombreVar, valor, defectoDesarrollo string) string {
+	if valor != "" {
+		return valor
+	}
+	if cfg.EntornoApp == "production" {
+		log.Fatalf("api: %s no está definida en APP_ENV=production (ADR 0020).", nombreVar)
+	}
+	log.Printf("api: %s no está definida; usando el valor de desarrollo %q", nombreVar, defectoDesarrollo)
+	return defectoDesarrollo
+}
+
+// construirEvaluadorDeRiesgo monta el motor real de Confianza (ADR 0018:
+// LimitadorTasa sobre Redis + VerificadorCaptcha Turnstile) si REDIS_URL
+// está definido, o nil si no — cada contexto (Identidad, Acceso) decide
+// por su cuenta qué adaptador no-op montar detrás de su propio puerto
+// EvaluadorConfianza cuando esto es nil.
+func construirEvaluadorDeRiesgo(cfg configuracion.Config) confianzapuertos.EvaluadorDeRiesgo {
+	if cfg.URLRedis == "" {
+		return nil
+	}
 	clienteRedis, err := cache.NuevoClienteRedis(cfg.URLRedis)
 	if err != nil {
 		log.Fatalf("api: REDIS_URL definido pero inválido: %v", err)
 	}
-
 	limitador := confianzaredis.NuevoLimitadorTasa(clienteRedis)
 	verificadorCaptcha := turnstile.NuevoVerificadorCaptcha(cfg.TurnstileSecretKey, cfg.TurnstileVerifyURL, cfg.EntornoApp)
 	evaluarTrustSignal := confianzaaplicacion.NuevoEvaluarTrustSignalCasoDeUso(limitador, verificadorCaptcha)
-
-	var riesgo confianzapuertos.EvaluadorDeRiesgo = evaluarTrustSignal
-	slog.Info("api: EvaluadorConfianza real montado (rate limiting por IP y por cuenta vía Redis + captcha Cloudflare Turnstile)",
+	slog.Info("api: motor de Confianza real montado (rate limiting por IP y por cuenta vía Redis + captcha Cloudflare Turnstile)",
 		"redis_configurado", true, "turnstile_secret_configurado", cfg.TurnstileSecretKey != "")
+	return evaluarTrustSignal
+}
+
+// construirEvaluadorConfianzaIdentidad decide entre EvaluadorConfianzaNoOp
+// y EvaluadorConfianzaReal de Identidad según si riesgo es nil (ADR 0018).
+func construirEvaluadorConfianzaIdentidad(riesgo confianzapuertos.EvaluadorDeRiesgo) identidadpuertos.EvaluadorConfianza {
+	if riesgo == nil {
+		return identidadconfianza.NuevoEvaluadorConfianzaNoOp(nil)
+	}
 	return identidadconfianza.NuevoEvaluadorConfianzaReal(riesgo)
 }

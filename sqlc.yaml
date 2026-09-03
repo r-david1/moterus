@@ -17,3 +17,13 @@ sql:
         sql_package: "pgx/v5"
         emit_json_tags: true
         emit_interface: true
+  - engine: "postgresql"
+    queries: "db/consultas/acceso.sql"
+    schema: "db/migraciones"
+    gen:
+      go:
+        package: "sqlc"
+        out: "internal/acceso/adaptadores/postgres/sqlc"
+        sql_package: "pgx/v5"
+        emit_json_tags: true
+        emit_interface: true
