@@ -3,10 +3,22 @@
 -- docs/design/tenencia-bounded-context.md). Formato exigido por
 -- `auditoria_acciones_formato` (^[a-z_]+\.[a-z_]+$) — las diez cumplen.
 --
--- Numeración 000012 a propósito, no 000010: las migraciones 000010
--- (invitaciones) y 000011 (RLS de Tenencia) quedan deliberadamente para más
--- adelante (§10 del diseño), pero el catálogo de auditoría no depende de
--- ninguna de las dos y no hay razón para bloquearlo.
+-- Numeración 000012, antes de que existan las tablas de invitaciones/RLS:
+-- el catálogo de auditoría no depende de ninguna de las dos y no había
+-- razón para bloquearlo en el momento en que se escribió esta migración.
+--
+-- CORRECCIÓN POSTERIOR (léela si te preguntas por qué invitaciones/RLS
+-- llevan los números 000013/000014 en vez de los originalmente previstos
+-- 000010/000011): golang-migrate rastrea un único "version" más alto ya
+-- aplicado, no un conjunto de migraciones aplicadas — una vez que 000012
+-- corrió, cualquier migración con un número MENOR (000010, 000011) queda
+-- silenciosamente ignorada para siempre por `up`, aunque nunca se haya
+-- aplicado. Se detectó antes de que 000010/000011 llegaran a aplicarse
+-- (ver comentario de cabecera de 000013_crear_invitaciones.up.sql) y se
+-- renumeraron a 000013/000014. Lección para el futuro: dentro de este
+-- contexto, nunca dejar un hueco de numeración "reservado para después" —
+-- solo asignar el siguiente número libre en el momento de escribir cada
+-- migración, en el orden en que se van a aplicar.
 --
 -- Ver docs/catalogos/acciones-auditoria.md, sección "Contexto Tenencia", para
 -- la versión legible de esta misma tabla.

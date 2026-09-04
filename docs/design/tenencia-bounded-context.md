@@ -1182,7 +1182,7 @@ GRANT SELECT, INSERT, UPDATE ON membresias     TO rol_aplicacion;
 REVOKE DELETE, TRUNCATE ON organizaciones, membresias FROM rol_aplicacion;
 ```
 
-### 6.2 `000010_crear_invitaciones.{up,down}.sql`
+### 6.2 `000013_crear_invitaciones.{up,down}.sql`
 
 ```sql
 CREATE TABLE invitaciones (
@@ -1219,7 +1219,7 @@ REVOKE DELETE, TRUNCATE ON invitaciones FROM rol_aplicacion;
 
 Nota sobre `DELETE`: a diferencia de `tokens_verificacion_correo` (que sí lo necesita, porque el token se consume y se borra), aquí la invitación resuelta **es evidencia** — "¿quién invitó a esta persona, cuándo, con qué rol?" es una pregunta de auditoría de accesos de primer orden. Se conserva con `estado` terminal, igual que la cadena de tokens de refresco de Acceso.
 
-### 6.3 `000011_rls_tenencia.{up,down}.sql` — aislamiento multi-tenant
+### 6.3 `000014_rls_tenencia.{up,down}.sql` — aislamiento multi-tenant
 
 Es la migración que materializa lo que `internal/tenencia/adaptadores/postgres/doc.go` ya prometía (*"con RLS por tenant"*) y lo que ADR 0017 dejó anotado como *"multi-tenant, ADR pendiente de Tenencia"*.
 
@@ -1421,8 +1421,8 @@ Contrato que Tenencia reutiliza del mecanismo ya construido por `auditoria-foren
 3. `tenencia/puertos` (entrada + salida) y mocks.
 4. Migraciones `000009` y `000012` (agentes `base-datos` + `auditoria-forense`), más la actualización de `docs/catalogos/acciones-auditoria.md`. Verificar los `GRANT` en `test/integracion/privilegios_test.go`.
 5. `tenencia/aplicacion`: **`Autorizar` primero** (es el que desbloquea a Identidad y a Confianza y el que valida el modelo entero), después `CrearOrganizacion`, luego el grupo de membresías de §3.2, y las consultas.
-6. Migración `000011` (RLS) **después** de que existan casos de uso reales que la ejerciten, no antes: una política RLS sin consultas que la atraviesen es una política no probada. Con test de integración dedicado que verifique el comportamiento *fail-closed* (sin `SET LOCAL`, cero filas) y el aislamiento cruzado (dos organizaciones, ninguna ve a la otra).
-7. Migración `000010` + casos de uso de invitación (agente `base-datos` + `go-aplicacion`), con el notificador stub log-only.
+6. Migración `000014` (RLS) **después** de que existan casos de uso reales que la ejerciten, no antes: una política RLS sin consultas que la atraviesen es una política no probada. Con test de integración dedicado que verifique el comportamiento *fail-closed* (sin `SET LOCAL`, cero filas) y el aislamiento cruzado (dos organizaciones, ninguna ve a la otra).
+7. Migración `000013` + casos de uso de invitación (agente `base-datos` + `go-aplicacion`), con el notificador stub log-only.
 8. Adaptadores (agente `go-infraestructura`): Postgres con los tres repositorios y `alcance_tenencia.go`, ACL de Identidad, ACL de Confianza, ACL de auditoría, HTTP con Huma y los **dos** middlewares.
 9. Cambios en otros contextos (§11): publicar el `Acceso` en el contexto desde el middleware de autenticación; cerrar la autorización de `GET /identidad/usuarios/{id}`; umbrales nuevos en Confianza; `SET LOCAL` en `plataforma/bd`.
 10. Tests de integración (agente `tests-qa`) contra Postgres real: el invariante del último propietario bajo concurrencia (dos transacciones intentando degradar al mismo tiempo — exactamente una debe ganar, igual que el test de rotación concurrente de Acceso), aislamiento RLS entre dos organizaciones, `FORCE RLS` sobre el rol dueño, redención de invitación por destinatario correcto e incorrecto, y verificación de que la cadena de auditoría sigue íntegra con `organizacion_id` poblado (`assertCadenaAuditoriaIntegra`).

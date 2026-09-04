@@ -18,7 +18,7 @@
 --     total a propósito: readmitir a alguien crea una fila nueva (INV-TEN-08,
 --     una membresía nunca se borra físicamente) y un índice total lo
 --     impediría.
---   * SIN RLS todavía: es `000011_rls_tenencia`, deliberadamente después de
+--   * SIN RLS todavía: es `000014_rls_tenencia`, deliberadamente después de
 --     que existan casos de uso reales que la ejerzan (§10 del diseño).
 --   * El `CONSTRAINT TRIGGER ... DEFERRABLE INITIALLY DEFERRED` que sigue es
 --     el segundo mecanismo de INV-TEN-06 ("una organización activa nunca se

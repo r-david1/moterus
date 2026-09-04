@@ -2,7 +2,7 @@
 
 ## Contexto
 
-`internal/tenencia/adaptadores/postgres/doc.go` prometía desde su creación *"repositorios [...] sobre pgx/sqlc con RLS por tenant"*, y ADR 0017 dejó anotado explícitamente que el aislamiento multi-tenant quedaba como *"ADR pendiente de Tenencia"*. Con el diseño del contexto (`docs/design/tenencia-bounded-context.md` §6.3) hay que fijar el mecanismo concreto antes de escribir la migración `000011`.
+`internal/tenencia/adaptadores/postgres/doc.go` prometía desde su creación *"repositorios [...] sobre pgx/sqlc con RLS por tenant"*, y ADR 0017 dejó anotado explícitamente que el aislamiento multi-tenant quedaba como *"ADR pendiente de Tenencia"*. Con el diseño del contexto (`docs/design/tenencia-bounded-context.md` §6.3) hay que fijar el mecanismo concreto antes de escribir la migración `000014`.
 
 La pregunta no es *si* filtrar por organización — el filtrado en la capa de aplicación (todo repositorio de Tenencia recibe un `IDOrganizacion` explícito, INV-TEN-13) ya lo hace. La pregunta es si además hace falta una **segunda barrera, en la base de datos**, que falle cerrado incluso si un caso de uso futuro olvida el filtro, y con qué mecanismo.
 
@@ -40,7 +40,7 @@ Un olvido de este mecanismo produce un bug ruidoso e inmediato en desarrollo (ce
 
 ## Consecuencias
 
-- Nueva migración `000011_rls_tenencia.{up,down}.sql`, aplicada **después** de que existan casos de uso reales que la ejerzan (§10 del diseño, paso 6) — una política RLS sin tráfico que la atraviese es una política no probada.
+- Nueva migración `000014_rls_tenencia.{up,down}.sql`, aplicada **después** de que existan casos de uso reales que la ejerzan (§10 del diseño, paso 6) — una política RLS sin tráfico que la atraviese es una política no probada.
 - `plataforma/bd` gana la responsabilidad de emitir `SET LOCAL` a partir de un `AlcanceDeTenencia` (§11.4 del diseño); si no hay alcance en el contexto, no se emite nada y las políticas fallan cerradas — no se permite un valor por defecto ni un alcance comodín.
 - Las transacciones de Identidad y Acceso, que no fijan alcance de Tenencia y no tocan sus tablas, no cambian de comportamiento.
 - Los jobs de mantenimiento futuros (purga de invitaciones vencidas, reportes) necesitan un rol Postgres propio con `BYPASSRLS`, nunca el rol de la API — se crea cuando exista el primer job, no antes.
