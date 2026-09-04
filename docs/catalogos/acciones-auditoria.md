@@ -60,7 +60,28 @@ la renovación exitosa como la rechazada, mismo criterio que
 procedimiento de "Agregar una acción nueva" de arriba. Ver
 `docs/design/acceso-bounded-context.md`, secciones 1.6 y 6.
 
+## Contexto Tenencia
+
+| Acción | Recurso | Descripción | Evento de dominio | Valores de `resultado` |
+|---|---|---|---|---|
+| `organizacion.creada` | `organizacion` | Alta de una organización nueva, junto con la membresía propietario de su fundador. | `OrganizacionCreada` | `exito` |
+| `organizacion.actualizada` | `organizacion` | Cambio de nombre o alias de una organización. | `OrganizacionActualizada` | `exito` |
+| `organizacion.estado_cambiado` | `organizacion` | Transición de `EstadoOrganizacion`: suspender, reactivar o archivar. | `EstadoOrganizacionCambiado` | `exito` |
+| `membresia.creada` | `membresia` | Alta de una membresía: fundación de la organización, alta directa o aceptación de invitación. | `MiembroAgregado` | `exito` |
+| `membresia.rol_cambiado` | `membresia` | Cambio de rol de un miembro, incluida la transferencia de propiedad. | `RolDeMiembroCambiado` | `exito` |
+| `membresia.estado_cambiado` | `membresia` | Suspensión o reactivación de una membresía sin removerla. | `EstadoMembresiaCambiado` | `exito` |
+| `membresia.removida` | `membresia` | Remoción de un miembro, por decisión de un administrador o por iniciativa propia. | `MiembroRemovido` | `exito` |
+| `membresia.invitada` | `invitacion` | Emisión de una invitación por correo con un rol propuesto. **Nunca** el token ni su hash. | `MiembroInvitado` | `exito` |
+| `membresia.invitacion_resuelta` | `invitacion` | Desenlace de una invitación: aceptada, revocada, expirada o intento fallido de redención — distinguidas por `detalles.desenlace` y `resultado`, mismo criterio que `usuario.login` y `sesion.renovada`. | `InvitacionResuelta` | `exito` / `fallo` |
+| `autorizacion.denegada` | `autorizacion` | Denegación de una autorización: sin membresía, membresía suspendida, organización no operativa o rol insuficiente. Las concesiones **no** se auditan (INV-TEN-25). | `AutorizacionDenegada` | `denegado` |
+
+10 eventos de dominio (`internal/tenencia/dominio/eventos.go`) mapean 1:1 a
+estas 10 acciones. Sembradas por la migración
+`db/migraciones/000012_acciones_auditoria_tenencia.up.sql`, siguiendo el
+procedimiento de "Agregar una acción nueva" de arriba. Ver
+`docs/design/tenencia-bounded-context.md`, secciones 1.6 y 6.4.
+
 ## Otros contextos
 
-Sin acciones propias todavía — se agregan aquí a medida que Tenencia y
-Confianza empiecen a emitir auditoría.
+Sin acciones propias todavía — se agregan aquí a medida que Confianza
+empiece a emitir auditoría.
