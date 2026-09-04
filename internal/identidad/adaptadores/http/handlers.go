@@ -27,12 +27,19 @@ type ManejadorIdentidad struct {
 	// más abajo y ADR 0018 para el porqué de esta asimetría deliberada en
 	// vez de tocar la aplicación (ya cerrada) de Identidad.
 	confianza puertos.EvaluadorConfianza
+	// autorizadorConsultas cierra la autorización cruzada de
+	// GET /identidad/usuarios/{id} (§11.2 del diseño de Tenencia): puede
+	// ir nil (p. ej. tests que ejercitan Identidad de forma aislada sin
+	// montar Tenencia, o un despliegue donde Tenencia todavía no está
+	// disponible), en cuyo caso ObtenerPorID trata cualquier consulta de
+	// un tercero con organizacion_id como no autorizada (fail-closed:
+	// 404, nunca 200 por defecto).
+	autorizadorConsultas puertos.AutorizadorDeConsultas
 }
 
 // NuevoManejadorIdentidad construye el manejador HTTP con sus puertos de
-// entrada inyectados. confianza puede ser nil: en ese caso el guardián de
-// perímetro de ReenviarVerificacion no hace ninguna evaluación (equivalente
-// a un EvaluadorConfianzaNoOp implícito) — ver ReenviarVerificacion.
+// entrada inyectados. confianza y autorizadorConsultas pueden ir nil (ver
+// los comentarios de sus campos en ManejadorIdentidad).
 func NuevoManejadorIdentidad(
 	registrador puertos.RegistradorDeUsuarios,
 	autenticador puertos.AutenticadorDeCredenciales,
@@ -40,6 +47,7 @@ func NuevoManejadorIdentidad(
 	verificadorDeCorreo puertos.VerificadorDeCorreo,
 	reenviadorDeVerificacion puertos.ReenviadorDeVerificacion,
 	confianza puertos.EvaluadorConfianza,
+	autorizadorConsultas puertos.AutorizadorDeConsultas,
 ) *ManejadorIdentidad {
 	return &ManejadorIdentidad{
 		registrador:              registrador,
@@ -48,6 +56,7 @@ func NuevoManejadorIdentidad(
 		verificadorDeCorreo:      verificadorDeCorreo,
 		reenviadorDeVerificacion: reenviadorDeVerificacion,
 		confianza:                confianza,
+		autorizadorConsultas:     autorizadorConsultas,
 	}
 }
 
@@ -97,9 +106,45 @@ func (m *ManejadorIdentidad) Autenticar(ctx context.Context, in *AutenticarInput
 // resuelve aquí (sección 3.3 del diseño: es de Tenencia/Acceso); este
 // endpoint solo transporta IDSolicitante para la auditoría condicional.
 func (m *ManejadorIdentidad) ObtenerPorID(ctx context.Context, in *ConsultaUsuarioInput) (*ConsultaUsuarioOutput, error) {
+	// IDSolicitante sale SIEMPRE del token ya validado por
+	// middlewareAutenticacionAcceso (§11.1/§11.2 del diseño de Tenencia:
+	// INV-TEN-12/INV-ACC-23), nunca de un parámetro de query que el
+	// cliente controla. Vacío si el handler se invocó sin pasar por ese
+	// middleware (p. ej. un test unitario que ejercita el handler
+	// directamente): se trata igual que "no se pudo autenticar al
+	// solicitante", nunca como "llamada interna del sistema".
+	acceso, autenticado := accesoDesdeContexto(ctx)
+	idSolicitante := acceso.IDUsuario
+
+	// Regla de autorización exacta (§11.2 del diseño de Tenencia):
+	//  1. El solicitante consulta su propio perfil -> permitido sin
+	//     consultar a Tenencia, sigue sin auditarse (comportamiento
+	//     inalterado del caso de uso, que compara IDSolicitante==IDUsuario).
+	//  2. Solicitante distinto del objetivo y SIN organizacion_id -> 404:
+	//     no hay ningún contexto en el que autorizar, y un 403 confirmaría
+	//     que el usuario existe.
+	//  3. Solicitante distinto del objetivo y CON organizacion_id -> se
+	//     exige (a) que el solicitante tenga miembro.ver en esa
+	//     organización y (b) que el objetivo sea miembro de la misma
+	//     organización (identidad/adaptadores/tenencia.AutorizadorConsultas).
+	//     Si cualquiera falla, o si Tenencia no está disponible
+	//     (autorizadorConsultas nil) o devuelve error, 404 (fail-closed).
+	if autenticado && idSolicitante != "" && idSolicitante != in.ID {
+		if in.OrganizacionID == "" {
+			return nil, mapearErrorDominio(ctx, &dominio.ErrUsuarioNoEncontrado{IDUsuario: in.ID})
+		}
+		if m.autorizadorConsultas == nil {
+			return nil, mapearErrorDominio(ctx, &dominio.ErrUsuarioNoEncontrado{IDUsuario: in.ID})
+		}
+		puede, err := m.autorizadorConsultas.PuedeConsultar(ctx, idSolicitante, in.ID, in.OrganizacionID)
+		if err != nil || !puede {
+			return nil, mapearErrorDominio(ctx, &dominio.ErrUsuarioNoEncontrado{IDUsuario: in.ID})
+		}
+	}
+
 	vista, err := m.consultor.ObtenerPorID(ctx, puertos.ConsultaUsuarioPorID{
 		IDUsuario:     in.ID,
-		IDSolicitante: in.IDSolicitante,
+		IDSolicitante: idSolicitante,
 		Origen:        origenSolicitudDesdeContexto(ctx),
 	})
 	if err != nil {

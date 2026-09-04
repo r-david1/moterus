@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
@@ -31,14 +32,30 @@ import (
 const cabeceraAutorizacion = "Authorization"
 const prefijoBearer = "Bearer "
 
+// claveAcceso es la clave no exportada bajo la que este middleware publica
+// el puertos.Acceso (de acceso/puertos) ya validado en el
+// context.Context. Antes de §11.1 del diseño de Tenencia
+// (docs/design/tenencia-bounded-context.md) este middleware autenticaba
+// pero descartaba el resultado: GET /identidad/usuarios/{id} seguía
+// leyendo solicitante_id de la query string, lo que violaba INV-TEN-12/
+// INV-ACC-23 (un cliente podía afirmar ser cualquiera). Ahora se publica
+// para que el handler tome el IDSolicitante del token, nunca del cliente.
+type claveAcceso struct{}
+
+// accesoDesdeContexto recupera el acceso/puertos.Acceso publicado por
+// middlewareAutenticacionAcceso. El segundo valor es false si el handler
+// se invocó sin pasar por ese middleware.
+func accesoDesdeContexto(ctx context.Context) (accesopuertos.Acceso, bool) {
+	acceso, ok := ctx.Value(claveAcceso{}).(accesopuertos.Acceso)
+	return acceso, ok
+}
+
 // middlewareAutenticacionAcceso construye el middleware Huma por operación
 // que exige un token de acceso Bearer válido (§3.3 del diseño de Acceso,
 // ComandoValidarAcceso con ExigirSesionViva=false: cero consultas a
-// Postgres en el camino feliz). No publica el puertos.Acceso resultante en
-// el contexto: ObtenerPorID no lo necesita hoy (sigue leyendo
-// solicitante_id de la query, comportamiento sin cambios) — esta es
-// deliberadamente la extensión MÍNIMA que cierra el hueco de
-// autenticación sin tocar la lógica de negocio ya cerrada de Identidad.
+// Postgres en el camino feliz). Publica el puertos.Acceso resultante en el
+// contexto (§11.1 del diseño de Tenencia): GET /identidad/usuarios/{id} ya
+// no lee solicitante_id de la query, lo toma de aquí.
 func middlewareAutenticacionAcceso(api huma.API, validador accesopuertos.ValidadorDeAccesos) func(huma.Context, func(huma.Context)) {
 	return func(ctx huma.Context, next func(huma.Context)) {
 		cabecera := ctx.Header(cabeceraAutorizacion)
@@ -61,16 +78,17 @@ func middlewareAutenticacionAcceso(api huma.API, validador accesopuertos.Validad
 		if err != nil {
 			origen, _ = accesodominio.NuevoOrigenSolicitud("", ctx.Header(fiber.HeaderUserAgent), "", ctx.Header(cabeceraIDSolicitud))
 		}
-		if _, err := validador.Validar(ctx.Context(), accesopuertos.ComandoValidarAcceso{
+		acceso, err := validador.Validar(ctx.Context(), accesopuertos.ComandoValidarAcceso{
 			TokenCompacto:    token,
 			ExigirSesionViva: false,
 			Origen:           origen,
-		}); err != nil {
+		})
+		if err != nil {
 			escribirErrorAutenticacion(api, ctx, "token de acceso inválido o expirado")
 			return
 		}
 
-		next(ctx)
+		next(huma.WithValue(ctx, claveAcceso{}, acceso))
 	}
 }
 

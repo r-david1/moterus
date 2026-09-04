@@ -97,7 +97,7 @@ func nuevoServidorAcceso(t *testing.T, pool *pgxpool.Pool) *fiber.App {
 		repositorioUsuarios, generadorTokensIdentidad, repositorioTokensVerificacion, notificadorCorreo, relojReal,
 	)
 	manejadorIdentidad := identidadhttp.NuevoManejadorIdentidad(
-		registrador, autenticadorIdentidad, consultorIdentidad, verificadorCorreo, reenviadorVerificacion, evaluadorConfianzaIdentidad,
+		registrador, autenticadorIdentidad, consultorIdentidad, verificadorCorreo, reenviadorVerificacion, evaluadorConfianzaIdentidad, nil,
 	)
 
 	// --- Acceso --------------------------------------------------------------

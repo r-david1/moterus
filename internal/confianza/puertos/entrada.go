@@ -18,9 +18,13 @@ type Solicitud struct {
 	IPOrigen          string
 	CorreoNormalizado string
 	TokenCaptcha      string
-	// TenantID queda declarado para cuando exista resolución de tenant en
-	// el borde HTTP (Tenencia todavía no la provee — ver ADR 0018, límite
-	// por tenant no cubierto en este hito). Vacío hoy siempre.
+	// TenantID ya no está vacío siempre: el contexto Tenencia lo puebla
+	// desde su middleware de autorización HTTP (§11.3 de
+	// docs/design/tenencia-bounded-context.md), una vez que el
+	// {idOrganizacion} de la ruta ya fue autorizado. Sigue sin usarse para
+	// un límite de rate limiting POR TENANT (ese alcance queda para cuando
+	// algún consumidor lo necesite; ver ADR 0018, "Alcance no cubierto")
+	// pero el hueco de "no hay una clave real que limitar" ya se cerró.
 	TenantID string
 }
 

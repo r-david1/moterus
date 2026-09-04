@@ -25,6 +25,12 @@ type LimitesPorAccion struct {
 	Cuenta Umbral
 }
 
+// LimitesPorAccion.Cuenta cubre, según la acción, tres claves distintas de
+// segundo nivel — "cuenta" es el nombre genérico del campo, no implica
+// necesariamente una cuenta de usuario (ver aplicacion.claveLimite):
+// correo normalizado (Identidad), sesión/usuario (Acceso), o
+// usuario/organización/IP-como-clave-opaca (Tenencia, §11.3 de su diseño).
+//
 // PoliticaLimites es la tabla cerrada de umbrales por acción. Los números
 // están documentados y justificados en el ADR 0018 (no se pueden ajustar
 // sin actualizar ese documento): son deliberadamente más agresivos en
@@ -46,6 +52,20 @@ type PoliticaLimites map[Accion]LimitesPorAccion
 //     de un usuario, y una oficina tras NAT con 20 usuarios activos supera
 //     3/min de forma perfectamente legítima.
 //   - cierre_masivo_sesiones:   IP 5/1min   · cuenta("usuario:<id>") 3/15min
+//   - crear_organizacion:       IP 20/hora  · cuenta("usuario:<id>") 5/hora —
+//     operación rara y cara; el techo real de organizaciones por usuario lo
+//     pone PoliticaOrganizacion.MaximoOrganizacionesPorUsuario, esto solo
+//     acota la tasa (§11.3 del diseño de Tenencia).
+//   - invitar_miembro:          IP 5/1min   · cuenta("organizacion:<id>") 20/hora —
+//     el endpoint envía correo a terceros: el vector de abuso más caro del
+//     contexto, porque el costo lo paga la reputación del dominio del
+//     servicio.
+//   - aceptar_invitacion:       IP 10/1min  · cuenta("ip:<ip>") 10/1min —
+//     oráculo de fuerza bruta sobre tokens de invitación, igual que
+//     renovacion_sesion lo es sobre tokens de refresco; ambas dimensiones
+//     son en la práctica la misma IP (tenencia/aplicacion.claveCuentaPorIP
+//     no conoce el correo del sujeto en este punto del flujo), así que se
+//     fija el mismo umbral en las dos.
 func PoliticaLimitesPorDefecto() PoliticaLimites {
 	return PoliticaLimites{
 		AccionLogin: {
@@ -67,6 +87,18 @@ func PoliticaLimitesPorDefecto() PoliticaLimites {
 		AccionCierreMasivoSesiones: {
 			IP:     Umbral{Limite: 5, Ventana: time.Minute},
 			Cuenta: Umbral{Limite: 3, Ventana: 15 * time.Minute},
+		},
+		AccionCrearOrganizacion: {
+			IP:     Umbral{Limite: 20, Ventana: time.Hour},
+			Cuenta: Umbral{Limite: 5, Ventana: time.Hour},
+		},
+		AccionInvitarMiembro: {
+			IP:     Umbral{Limite: 5, Ventana: time.Minute},
+			Cuenta: Umbral{Limite: 20, Ventana: time.Hour},
+		},
+		AccionAceptarInvitacion: {
+			IP:     Umbral{Limite: 10, Ventana: time.Minute},
+			Cuenta: Umbral{Limite: 10, Ventana: time.Minute},
 		},
 	}
 }

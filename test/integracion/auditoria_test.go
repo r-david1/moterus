@@ -58,13 +58,24 @@ func TestAuditoria_FlujoHTTPCompleto_GeneraAccionesEsperadasYCadenaIntegra(t *te
 		t.Fatalf("login exitoso (setup) = %d, esperado %d", statusLoginExitoso, http.StatusOK)
 	}
 
-	// 5. Consulta por un tercero (IDSolicitante distinto) -> usuario.consultado / exito.
-	solicitanteAjeno := nuevoUsuarioDePrueba(t, correoUnico(t, "auditoria-solicitante-ajeno")).ID().String()
-	statusConsulta := respuestaHTTP(t, app, peticionJSON(t, http.MethodGet,
-		"/identidad/usuarios/"+registro.IDUsuario+"?solicitante_id="+solicitanteAjeno, nil), nil)
-	if statusConsulta != http.StatusOK {
-		t.Fatalf("consulta por tercero (setup) = %d, esperado %d", statusConsulta, http.StatusOK)
-	}
+	// Ya NO hay un paso 5 de "consulta por un tercero" aquí: desde el cierre
+	// de la autorización cruzada de GET /identidad/usuarios/{id} (§11.2 del
+	// diseño de Tenencia, docs/design/tenencia-bounded-context.md), el
+	// query param `solicitante_id` dejó de tener efecto — es un cambio de
+	// contrato deliberado (ver internal/identidad/README.md): quién
+	// pregunta sale siempre del token Bearer ya validado, nunca de un
+	// parámetro que el cliente controla. nuevoServidorIdentidad monta
+	// Identidad SIN un acceso/puertos.ValidadorDeAccesos (ver su firma),
+	// así que este archivo, acotado a Identidad en aislamiento, no puede
+	// fabricar un Bearer real para ejercitar el camino de tercero
+	// autorizado por Tenencia; esa cobertura, con la pila completa
+	// (Identidad+Acceso+Tenencia), es responsabilidad de los tests de
+	// integración de Tenencia. Lo que sigue vigente y se verifica aquí es
+	// la dependencia dura documentada en §11.2: ObtenerUsuario NUNCA audita
+	// cuando IDSolicitante llega vacío (llamada interna/no autenticada) —
+	// ver TestObtenerUsuarioCasoDeUso_ConsultaInterna_IDSolicitanteVacio_NoAudita
+	// en internal/identidad/aplicacion/obtener_usuario_test.go (ya cubierta,
+	// sin cambios: Acceso y ahora Tenencia dependen de este comportamiento).
 
 	// --- verificación directa de la bitácora (rol dueño, sin restricciones) ---
 
@@ -97,7 +108,6 @@ func TestAuditoria_FlujoHTTPCompleto_GeneraAccionesEsperadasYCadenaIntegra(t *te
 		{"usuario.login", "fallo"}, // correo no verificado
 		{"usuario.login", "fallo"}, // contraseña incorrecta
 		{"usuario.login", "exito"},
-		{"usuario.consultado", "exito"},
 	}
 	if len(encontradas) != len(esperadas) {
 		t.Fatalf("se encontraron %d filas de auditoría, esperadas %d: %+v", len(encontradas), len(esperadas), encontradas)

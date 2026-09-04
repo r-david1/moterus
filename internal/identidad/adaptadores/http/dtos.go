@@ -85,15 +85,22 @@ type AutenticarOutput struct {
 // --- GET /identidad/usuarios/{id} (consulta) --------------------------------
 
 // ConsultaUsuarioInput es el input Huma de la consulta de usuario por ID.
+//
+// Cambio de contrato (§11.2 del diseño de Tenencia,
+// docs/design/tenencia-bounded-context.md): el parámetro de query
+// `solicitante_id` DEJA DE TENER EFECTO. Quién pregunta ya no lo dice el
+// cliente: sale siempre del token Bearer ya validado
+// (middlewareAutenticacionAcceso), exactamente lo que INV-TEN-12/
+// INV-ACC-23 exigen. Ver internal/identidad/README.md.
 type ConsultaUsuarioInput struct {
 	ID string `path:"id" format:"uuid" doc:"Identificador (UUID) del usuario a consultar."`
-	// IDSolicitante identifica a quién pregunta, para la auditoría
-	// condicional de ObtenerUsuarioCasoDeUso (sección 3.3 del diseño:
-	// consultar el perfil propio no se audita). Vacío = llamada interna del
-	// sistema. La autorización real (¿puede este solicitante ver a este
-	// usuario?) es de Tenencia/Acceso, fuera de alcance de este endpoint —
-	// ver comentario de rutas.go.
-	IDSolicitante string `query:"solicitante_id" doc:"Identificador de quién realiza la consulta, para la auditoría condicional (vacío = llamada interna)."`
+	// OrganizacionID es la organización desde la que se pregunta, cuando el
+	// solicitante consulta a un tercero (no su propio perfil). Sin ella, un
+	// solicitante distinto del objetivo recibe siempre 404: no hay ningún
+	// contexto en el que Tenencia pueda autorizar la consulta. Con ella, se
+	// exige miembro.ver del solicitante Y que el objetivo sea miembro de
+	// esa misma organización.
+	OrganizacionID string `query:"organizacion_id" format:"uuid" doc:"Organización desde la que se consulta a un tercero (irrelevante al consultar el propio perfil)."`
 }
 
 // vistaUsuarioRespuesta es el cuerpo de la respuesta de la consulta.

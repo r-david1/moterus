@@ -24,4 +24,13 @@ const (
 	// víctima). Identidad NO usa estas dos acciones.
 	AccionRenovacionSesion     Accion = "renovacion_sesion"
 	AccionCierreMasivoSesiones Accion = "cierre_masivo_sesiones"
+	// AccionCrearOrganizacion, AccionInvitarMiembro y AccionAceptarInvitacion
+	// son las tres acciones que agrega el contexto Tenencia (§11.3 del
+	// diseño de Tenencia, docs/design/tenencia-bounded-context.md). El
+	// ACL tenencia/adaptadores/confianza puebla además
+	// puertos.Solicitud.TenantID (antes siempre vacío): es el primer
+	// consumidor que resuelve un tenant real en el borde HTTP.
+	AccionCrearOrganizacion Accion = "crear_organizacion"
+	AccionInvitarMiembro    Accion = "invitar_miembro"
+	AccionAceptarInvitacion Accion = "aceptar_invitacion"
 )

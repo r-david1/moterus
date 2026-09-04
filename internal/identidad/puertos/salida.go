@@ -148,3 +148,27 @@ type ResultadoIntento struct {
 	Exitoso           bool
 	UsuarioID         string // vacío si no se resolvió el usuario
 }
+
+// AutorizadorDeConsultas es el puerto de salida ESTRECHO sobre Tenencia que
+// GET /identidad/usuarios/{id} consume para cerrar la autorización cruzada
+// del §11.2 del diseño de Tenencia (docs/design/tenencia-bounded-context.md):
+// "¿puede el solicitante ver el perfil de un usuario distinto de sí mismo,
+// dentro de la organización que declara?". Implementado por
+// identidad/adaptadores/tenencia — el ÚNICO paquete de Identidad autorizado
+// a importar tenencia/puertos (mismo criterio que INV-ACC-19/INV-TEN-28: la
+// capa anticorrupción la posee quien depende, no quien es dependido).
+//
+// Deliberadamente devuelve un solo bool, no una Autorizacion completa: el
+// adaptador HTTP de Identidad solo necesita "sí" o "no" (ambos casos de
+// fallo se colapsan en el mismo 404, §11.2) y nunca debe inspeccionar el
+// motivo de denegación de otro contexto para tomar una decisión propia.
+type AutorizadorDeConsultas interface {
+	// PuedeConsultar responde true solo si AMBAS condiciones se cumplen:
+	// (a) idSolicitante tiene el permiso "miembro.ver" en idOrganizacion, y
+	// (b) idObjetivo es miembro (cualquier rol, cualquier estado de
+	// membresía) de esa misma organización. Cualquier error de
+	// infraestructura o de Tenencia se propaga tal cual: el llamador debe
+	// tratarlo como "no se pudo autorizar" (404), nunca como "sí
+	// autorizado" por defecto.
+	PuedeConsultar(ctx context.Context, idSolicitante, idObjetivo, idOrganizacion string) (bool, error)
+}

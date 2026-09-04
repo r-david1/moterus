@@ -44,8 +44,21 @@ import (
 	identidadhttp "github.com/r-david1/moterus/internal/identidad/adaptadores/http"
 	"github.com/r-david1/moterus/internal/identidad/adaptadores/notificaciones"
 	identidadpostgres "github.com/r-david1/moterus/internal/identidad/adaptadores/postgres"
+	identidadtenencia "github.com/r-david1/moterus/internal/identidad/adaptadores/tenencia"
 	"github.com/r-david1/moterus/internal/identidad/aplicacion"
 	identidadpuertos "github.com/r-david1/moterus/internal/identidad/puertos"
+
+	tenenciaauditoria "github.com/r-david1/moterus/internal/tenencia/adaptadores/auditoria"
+	tenenciaconfianza "github.com/r-david1/moterus/internal/tenencia/adaptadores/confianza"
+	tenenciacripto "github.com/r-david1/moterus/internal/tenencia/adaptadores/cripto"
+	tenenciaeventos "github.com/r-david1/moterus/internal/tenencia/adaptadores/eventos"
+	tenenciahttp "github.com/r-david1/moterus/internal/tenencia/adaptadores/http"
+	tenenciaidentidad "github.com/r-david1/moterus/internal/tenencia/adaptadores/identidad"
+	tenencianotificaciones "github.com/r-david1/moterus/internal/tenencia/adaptadores/notificaciones"
+	tenenciapostgres "github.com/r-david1/moterus/internal/tenencia/adaptadores/postgres"
+	tenenciaaplicacion "github.com/r-david1/moterus/internal/tenencia/aplicacion"
+	tenenciadominio "github.com/r-david1/moterus/internal/tenencia/dominio"
+	tenenciapuertos "github.com/r-david1/moterus/internal/tenencia/puertos"
 
 	"github.com/r-david1/moterus/internal/plataforma/bd"
 	"github.com/r-david1/moterus/internal/plataforma/cache"
@@ -150,14 +163,27 @@ func montarIdentidadYAcceso(ctx context.Context, app *fiber.App, cfg configuraci
 		repositorioUsuarios, generadorTokensIdentidad, repositorioTokensVerificacion, notificadorCorreo, relojReal,
 	)
 
-	manejadorIdentidad := identidadhttp.NuevoManejadorIdentidad(
-		registrador, autenticadorIdentidad, consultorIdentidad, verificadorCorreo, reenviadorVerificacion, evaluadorConfianzaIdentidad,
-	)
-
 	// --- Acceso: adaptadores, casos de uso y rutas -------------------------
 
 	validadorAcceso, manejadorAcceso := montarAcceso(cfg, pool, relojReal, autenticadorIdentidad, consultorIdentidad, riesgo)
 	accesohttp.RegistrarRutas(app, manejadorAcceso, validadorAcceso)
+
+	// --- Tenencia: adaptadores, casos de uso y rutas -----------------------
+	//
+	// Se monta DESPUÉS de Acceso (necesita validadorAcceso para su propio
+	// middleware de autenticación) y ANTES de ensamblar el manejador HTTP
+	// de Identidad: GET /identidad/usuarios/{id} necesita el
+	// VerificadorDeAutorizacion y el ConsultorDeMembresias que Tenencia
+	// expone (§11.2 del diseño de Tenencia) para construir su propio ACL
+	// (identidadtenencia.AutorizadorConsultas) antes de construir
+	// manejadorIdentidad.
+	autorizadorTenencia, consultorMembresiasTenencia := montarTenencia(cfg, app, pool, relojReal, validadorAcceso, consultorIdentidad, riesgo)
+	autorizadorConsultasIdentidad := identidadtenencia.NuevoAutorizadorConsultas(autorizadorTenencia, consultorMembresiasTenencia)
+
+	manejadorIdentidad := identidadhttp.NuevoManejadorIdentidad(
+		registrador, autenticadorIdentidad, consultorIdentidad, verificadorCorreo, reenviadorVerificacion,
+		evaluadorConfianzaIdentidad, autorizadorConsultasIdentidad,
+	)
 
 	// --- Identidad: rutas (ahora sí, con el validador de Acceso) ----------
 
@@ -269,6 +295,78 @@ func montarAcceso(
 		llavero.KIDActivo(), estadoRedis, estadoConfianza)
 
 	return validador, manejador
+}
+
+// montarTenencia ensambla el bounded context Tenencia completo
+// (docs/design/tenencia-bounded-context.md): los tres repositorios Postgres
+// con RLS (§6.3), los cinco ACL de cruce (Identidad, Confianza, Auditoría,
+// eventos, notificaciones), los casos de uso y las rutas HTTP con sus dos
+// middlewares (autenticación + autorización). Se monta DESPUÉS de Acceso
+// (necesita validadorAcceso) y registra sus propias rutas directamente
+// (mismo criterio que montarAcceso, salvo que aquí RegistrarRutas se llama
+// dentro de esta función porque el autorizador y el alcance que necesita
+// son internos a este ensamblado, no algo que otro contexto vaya a
+// reutilizar). Devuelve el VerificadorDeAutorizacion y el
+// ConsultorDeMembresias — los dos puertos que Tenencia EXPONE a otros
+// contextos (§2.4 del diseño) — para que montarIdentidadYAcceso construya
+// el ACL identidad/adaptadores/tenencia.AutorizadorConsultas antes de
+// ensamblar el manejador HTTP de Identidad.
+func montarTenencia(
+	cfg configuracion.Config,
+	app *fiber.App,
+	pool *pgxpool.Pool,
+	relojReal reloj.Real,
+	validadorAcceso accesopuertos.ValidadorDeAccesos,
+	consultorIdentidad identidadpuertos.ConsultorDeUsuarios,
+	riesgo confianzapuertos.EvaluadorDeRiesgo,
+) (tenenciapuertos.VerificadorDeAutorizacion, tenenciapuertos.ConsultorDeMembresias) {
+	organizaciones := tenenciapostgres.NuevoRepositorioOrganizaciones(pool)
+	membresias := tenenciapostgres.NuevoRepositorioMembresias(pool)
+	invitacionesRepo := tenenciapostgres.NuevoRepositorioInvitaciones(pool)
+	uow := tenenciapostgres.NuevaUnidadDeTrabajo(pool)
+	generadorIDs := tenenciapostgres.NuevoGeneradorIDs()
+	alcance := tenenciapostgres.NuevaAlcanceTenencia()
+	generadorTokens := tenenciacripto.NuevoGeneradorTokens()
+
+	registroAuditoriaTenencia := tenenciaauditoria.NuevoRegistroAuditoria(pool)
+	publicadorEventosTenencia := tenenciaeventos.NuevoPublicadorLog(nil)
+	notificadorInvitaciones := tenencianotificaciones.NuevoNotificadorInvitacionesLog(nil)
+	sujetos := tenenciaidentidad.NuevoVerificadorSujetos(consultorIdentidad)
+
+	var evaluadorConfianzaTenencia tenenciapuertos.EvaluadorConfianza
+	if riesgo != nil {
+		evaluadorConfianzaTenencia = tenenciaconfianza.NuevoEvaluadorConfianzaReal(riesgo)
+	} else {
+		evaluadorConfianzaTenencia = tenenciaconfianza.NuevoEvaluadorConfianzaNoOp(nil)
+	}
+
+	politica := tenenciadominio.PoliticaOrganizacionPorDefecto()
+
+	autorizador := tenenciaaplicacion.NuevoAutorizarCasoDeUso(organizaciones, membresias, registroAuditoriaTenencia, relojReal)
+	gestorOrganizaciones := tenenciaaplicacion.NuevoOrganizacionesCasoDeUso(
+		organizaciones, membresias, autorizador, sujetos, evaluadorConfianzaTenencia,
+		registroAuditoriaTenencia, publicadorEventosTenencia, relojReal, generadorIDs, uow, politica,
+	)
+	gestorMembresias := tenenciaaplicacion.NuevoMembresiasCasoDeUso(
+		organizaciones, membresias, autorizador, sujetos,
+		registroAuditoriaTenencia, publicadorEventosTenencia, relojReal, generadorIDs, uow, politica,
+	)
+	gestorInvitaciones := tenenciaaplicacion.NuevoInvitacionesCasoDeUso(
+		organizaciones, membresias, invitacionesRepo, autorizador, sujetos, evaluadorConfianzaTenencia, notificadorInvitaciones,
+		registroAuditoriaTenencia, publicadorEventosTenencia, relojReal, generadorIDs, generadorTokens, uow, politica,
+	)
+	consultas := tenenciaaplicacion.NuevoConsultasCasoDeUso(organizaciones, membresias, autorizador)
+
+	manejador := tenenciahttp.NuevoManejadorTenencia(gestorOrganizaciones, consultas, gestorMembresias, consultas, gestorInvitaciones)
+	tenenciahttp.RegistrarRutas(app, manejador, validadorAcceso, autorizador, alcance)
+
+	estadoConfianza := "confianza-noop"
+	if riesgo != nil {
+		estadoConfianza = "confianza-real(redis+turnstile)"
+	}
+	log.Printf("api: contexto Tenencia montado (postgres+rls, auditoria, eventos-log, notificador-invitaciones-log, %s)", estadoConfianza)
+
+	return autorizador, consultas
 }
 
 // exigirEnProduccionOAdvertir implementa el fail-closed de ADR 0020

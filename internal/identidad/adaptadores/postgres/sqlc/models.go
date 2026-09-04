@@ -78,6 +78,46 @@ type Auditorium struct {
 	HashActual string `json:"hash_actual"`
 }
 
+// Agregado Invitacion (contexto Tenencia). Nunca se borra fisicamente: transiciona a un estado terminal (aceptada/revocada/expirada) que se conserva como evidencia de auditoria.
+type Invitacione struct {
+	ID                 pgtype.UUID        `json:"id"`
+	OrganizacionID     pgtype.UUID        `json:"organizacion_id"`
+	CorreoDestinatario string             `json:"correo_destinatario"`
+	RolPropuesto       string             `json:"rol_propuesto"`
+	Estado             string             `json:"estado"`
+	HashToken          string             `json:"hash_token"`
+	InvitadaPor        pgtype.UUID        `json:"invitada_por"`
+	CreadaEn           pgtype.Timestamptz `json:"creada_en"`
+	ExpiraEn           pgtype.Timestamptz `json:"expira_en"`
+	ResueltaEn         pgtype.Timestamptz `json:"resuelta_en"`
+}
+
+// Agregado Membresia (contexto Tenencia). Nunca se borra fisicamente (INV-TEN-08): transiciona a estado removida.
+type Membresia struct {
+	ID             pgtype.UUID        `json:"id"`
+	OrganizacionID pgtype.UUID        `json:"organizacion_id"`
+	UsuarioID      pgtype.UUID        `json:"usuario_id"`
+	Rol            string             `json:"rol"`
+	Estado         string             `json:"estado"`
+	OtorgadaPor    pgtype.UUID        `json:"otorgada_por"`
+	CreadaEn       pgtype.Timestamptz `json:"creada_en"`
+	ActualizadaEn  pgtype.Timestamptz `json:"actualizada_en"`
+	RemovidaEn     pgtype.Timestamptz `json:"removida_en"`
+}
+
+// Agregado Organizacion (contexto Tenencia). id es UUIDv7 generado por la aplicacion.
+type Organizacione struct {
+	ID            pgtype.UUID        `json:"id"`
+	Alias         string             `json:"alias"`
+	Nombre        string             `json:"nombre"`
+	Estado        string             `json:"estado"`
+	CreadaPor     pgtype.UUID        `json:"creada_por"`
+	CreadaEn      pgtype.Timestamptz `json:"creada_en"`
+	ActualizadaEn pgtype.Timestamptz `json:"actualizada_en"`
+	ArchivadaEn   pgtype.Timestamptz `json:"archivada_en"`
+	MotivoEstado  pgtype.Text        `json:"motivo_estado"`
+}
+
 type Sesione struct {
 	ID                  pgtype.UUID        `json:"id"`
 	UsuarioID           pgtype.UUID        `json:"usuario_id"`

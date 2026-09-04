@@ -26,6 +26,22 @@ func EjecutarEnTransaccion(ctx context.Context, pool *pgxpool.Pool, fn func(ctx 
 		return fmt.Errorf("bd: no se pudo iniciar la transacción: %w", err)
 	}
 
+	// Si el ctx trae un AlcanceTenencia publicado (por el middleware de
+	// autorización de Tenencia, o por uno de sus propios repositorios antes
+	// de abrir su propia transacción de una sola consulta), se fija AQUÍ,
+	// como parte de abrir la transacción — antes de que cualquier query de
+	// negocio se ejecute contra ella (ADR candidato 0031 del diseño de
+	// Tenencia). Ningún otro contexto (Identidad, Acceso) publica jamás un
+	// AlcanceTenencia, así que esto es un no-op invisible para ellos.
+	if alcance, ok := alcanceTenenciaDesdeContexto(ctx); ok {
+		if err := fijarAlcanceTenencia(ctx, tx, alcance); err != nil {
+			if errRollback := tx.Rollback(ctx); errRollback != nil && errRollback != pgx.ErrTxClosed {
+				return fmt.Errorf("bd: fallo al fijar el alcance de tenencia %w; además falló el rollback: %v", err, errRollback)
+			}
+			return err
+		}
+	}
+
 	ctxConTx := context.WithValue(ctx, claveTx{}, tx)
 
 	if err := fn(ctxConTx); err != nil {

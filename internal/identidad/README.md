@@ -22,8 +22,12 @@ Identidad **no** hace (y por diseño no debe hacerse aquí):
   cuatro endpoints de Identidad siguen sin requerir token, porque son
   precisamente el paso previo a obtener uno (alta de cuenta, verificación
   de credenciales sin sesión, confirmación de correo).
-- Roles, organizaciones, membresías — contexto **Tenencia** (todavía no
-  existe).
+- Roles, organizaciones, membresías — contexto **Tenencia** (implementado;
+  ver `docs/design/tenencia-bounded-context.md`). Identidad consume su
+  `VerificadorDeAutorizacion`/`ConsultorDeMembresias` solo a través de
+  `identidad/adaptadores/tenencia` (el único paquete autorizado a importar
+  `tenencia/puertos`), para cerrar la autorización de
+  `GET /identidad/usuarios/{id}` — ver más abajo.
 - Rate limiting, captcha, score de riesgo — contexto **Confianza**. Desde
   ADR 0018 hay una implementación real (`EvaluadorConfianzaReal`, Redis +
   Cloudflare Turnstile) además del adaptador *no-op* original — ver más
@@ -294,15 +298,33 @@ Acceso). Obtén el token con `POST /acceso/sesiones` primero (ver
 
 Cabecera obligatoria: `Authorization: Bearer <token_acceso>`.
 
-Query param opcional `solicitante_id`: identifica a quién pregunta, solo
-para la auditoría condicional (consultar el perfil propio no se audita).
-Vacío = llamada interna del sistema. **Sin cambios de comportamiento**:
-`middlewareAutenticacionAcceso` solo autentica (verifica que haya un
-sujeto válido); no publica el `puertos.Acceso` resultante en el contexto
-ni lo usa para completar `solicitante_id` automáticamente — es
-deliberadamente la extensión mínima que cierra el hueco de autenticación
-sin tocar la lógica de negocio ya cerrada de Identidad. El cliente sigue
-enviando `solicitante_id` explícitamente si quiere que se audite.
+**Cambio de contrato (§11.1/§11.2 del diseño de Tenencia,
+`docs/design/tenencia-bounded-context.md`):** el query param
+`solicitante_id` **ya no tiene ningún efecto** — si lo envías, se ignora.
+Quién pregunta (`IDSolicitante`) sale siempre del `sub` del token Bearer ya
+validado (`middlewareAutenticacionAcceso` ahora publica el
+`puertos.Acceso` resultante en el contexto, algo que antes descartaba
+deliberadamente). Esto cierra exactamente el hueco que INV-TEN-12/
+INV-ACC-23 prohíben: un cliente ya no puede afirmar ser cualquiera.
+
+Regla de autorización (§11.2 del diseño de Tenencia):
+
+- Si el `sub` del token coincide con el `{id}` de la ruta (consultar el
+  propio perfil): **permitido**, sin consultar a Tenencia, y **no se
+  audita** — igual que antes.
+- Si difieren y la petición **no** trae `organizacion_id` en la query:
+  **404** (no confirma que el `id` exista).
+- Si difieren y la petición **sí** trae `organizacion_id`: se exige, vía
+  `identidad/adaptadores/tenencia.AutorizadorConsultas` (el único paquete
+  de Identidad autorizado a importar `tenencia/puertos`), que (a) el
+  solicitante tenga `miembro.ver` en esa organización y (b) el objetivo sea
+  miembro de la misma organización. Si cualquiera falla, o Tenencia no está
+  disponible, **404**. Si ambas se cumplen, se audita `usuario.consultado`
+  (consulta de un tercero).
+
+Nuevo query param opcional `organizacion_id` (UUID): la organización desde
+la que se consulta a un tercero — ver la regla de arriba. Irrelevante al
+consultar el propio perfil.
 
 Response `200 OK`:
 
@@ -327,10 +349,10 @@ Errores posibles:
 | `422` | El `id` no es un UUID válido (rechazado por la validación de formato de Huma antes de llegar al caso de uso) |
 
 La **autorización** real ("¿puede este solicitante ver a este usuario?",
-más allá de estar autenticado) sigue sin existir: es de Tenencia, que
-todavía no existe. Hoy, cualquier sujeto con un token de acceso válido
-puede consultar cualquier `id`. **No es un placeholder de transporte** —
-la autenticación ya es real — pero tampoco es autorización completa.
+más allá de estar autenticado) **ya está cerrada** (§11.2 del diseño de
+Tenencia): ver la regla completa más arriba. Un sujeto autenticado ya NO
+puede consultar cualquier `id` a voluntad — solo el propio, o un tercero
+con el que comparte una organización donde tiene `miembro.ver`.
 
 `aud` específico: ninguno (mismo `ACCESO_AUDIENCIA` fijo que cualquier
 token de acceso — ADR 0002, un solo producto). Rate limit especial:
