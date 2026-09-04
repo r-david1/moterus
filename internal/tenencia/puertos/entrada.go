@@ -209,11 +209,18 @@ type ComandoAceptarInvitacion struct {
 
 // ConsultaAutorizacion transporta la entrada de
 // VerificadorDeAutorizacion.Autorizar (§3.7 del diseño): el camino caliente
-// del sistema.
+// del sistema. Origen viaja aquí (adición sobre el diseño original) porque
+// AutorizarCasoDeUso audita cada denegación (INV-TEN-25) y esa auditoría es
+// precisamente la señal pensada para detectar intentos de escalada — sin
+// IP/agente de quien la disparó, pierde la mitad de su valor forense. El
+// middleware de autorización de cualquier contexto consumidor ya tiene el
+// OrigenSolicitud de la petición (lo construyó para autenticar), así que
+// completar este campo no le cuesta nada nuevo.
 type ConsultaAutorizacion struct {
 	IDUsuario      string // SIEMPRE el `sub` de un token ya validado por Acceso
 	IDOrganizacion string // SIEMPRE explícito: nunca sale del token ni de la sesión
 	Permiso        string // catálogo cerrado de dominio.Permiso
+	Origen         dominio.OrigenSolicitud
 }
 
 // Autorizacion es la respuesta del contrato público. Permitido y Motivo van
