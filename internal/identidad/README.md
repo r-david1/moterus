@@ -385,4 +385,11 @@ de acciones: `docs/catalogos/acciones-auditoria.md`.
   hueco de autenticación de este contexto): `internal/acceso/README.md`
 - ADR 0019 (mecanismo de sesión de Acceso): `docs/adr/0019-mecanismo-sesion-jwt-refresco-rotatorio.md`
 - ADR 0020 (algoritmo de firma y rotación de llaves de Acceso): `docs/adr/0020-algoritmo-firma-jwt-rotacion-llaves.md`
+- README del contexto Tenencia (quien cierra la autorización de terceros de
+  `GET /identidad/usuarios/{id}` vía `VerificadorDeAutorizacion`/
+  `ConsultorDeMembresias`): `internal/tenencia/README.md`
+- ADR 0029/0030/0031 (modelo de roles, autorización por consulta, RLS de
+  Tenencia): `docs/adr/0029-modelo-roles-catalogo-cerrado.md`,
+  `docs/adr/0030-autorizacion-por-consulta-en-cada-peticion.md`,
+  `docs/adr/0031-rls-multi-tenant-guc-por-transaccion.md`
 - Índice completo de ADRs: `docs/adr/README.md`

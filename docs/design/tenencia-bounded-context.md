@@ -1,11 +1,26 @@
 # Diseño — Bounded Context **Tenencia**
 
-> Estado: **propuesta de diseño (sin código Go)**. Autor: agente `arquitecto-ddd-hexagonal`.
-> Fecha: 2026-09-03.
+> Estado: **implementada**. Autor original: agente `arquitecto-ddd-hexagonal`.
+> Fecha del diseño original: 2026-09-03. Fecha de cierre de implementación y
+> documentación: 2026-09-04.
 > Alcance: entidades, value objects, agregados, puertos, casos de uso, invariantes, eventos, migraciones y endpoints del contexto **Tenencia**.
-> Depende de: **ADR 0002 (un solo producto — no se reabre: organizaciones = tenants, sin capa de producto)**, ADR 0004 (nombres de tablas), ADR 0005 (auditoría forense hash-chained), ADR 0006 (Huma v2), ADR 0007 (español en dominio/aplicación/puertos), **ADR 0009 (frontera Identidad/Acceso — no se reabre)**, ADR 0017 (rol de login acotado: toda tabla nueva necesita `GRANT` explícito), ADR 0018 (Confianza + Redis), ADR 0019/0020 (sesión y firma de Acceso).
-> Consumidores: **Identidad** (cierra la autorización pendiente de `GET /identidad/usuarios/{id}`), **Confianza** (obtiene por fin una clave real de tenant), **Auditoría** (recibe los eventos y, por primera vez, un `organizacion_id` no nulo).
-> Estado del código hoy: solo existen los `doc.go` placeholder de `internal/tenencia/{dominio,aplicacion,puertos,adaptadores/{http,postgres}}`. Este documento es la referencia normativa previa a la implementación (agente `go-dominio`).
+> Depende de: **ADR 0002 (un solo producto — no se reabre: organizaciones = tenants, sin capa de producto)**, ADR 0004 (nombres de tablas), ADR 0005 (auditoría forense hash-chained), ADR 0006 (Huma v2), ADR 0007 (español en dominio/aplicación/puertos), **ADR 0009 (frontera Identidad/Acceso — no se reabre)**, ADR 0017 (rol de login acotado: toda tabla nueva necesita `GRANT` explícito), ADR 0018 (Confianza + Redis), ADR 0019/0020 (sesión y firma de Acceso), ADR 0029/0030/0031 (modelo de roles, autorización por consulta, RLS — ver más abajo).
+> Consumidores: **Identidad** (cierra la autorización de `GET /identidad/usuarios/{id}` — ya implementado), **Confianza** (obtiene por fin una clave real de tenant), **Auditoría** (recibe los eventos y, por primera vez, un `organizacion_id` no nulo).
+>
+> **Estado del código hoy: implementado end-to-end** (dominio, puertos,
+> aplicación, migraciones `000009`/`000012`/`000013`/`000014`,
+> adaptadores Postgres/HTTP con Huma v2, RLS activo) y verificado en vivo
+> contra un servidor real (Postgres+Redis reales): creación de
+> organización, aislamiento 404 entre organizaciones ajenas, alta de
+> miembro, cierre de la autorización de `GET /identidad/usuarios/{id}`,
+> flujo completo de invitación (invitar → registrar → loguear → aceptar,
+> sin que el token en claro salga nunca por HTTP) e integridad de la
+> cadena de auditoría con `organizacion_id` poblado. La referencia
+> **operativa** para integradores es `internal/tenencia/README.md` — este
+> documento sigue siendo la referencia normativa de diseño, pero donde
+> discrepe con el código, **el código es la fuente de verdad**; las
+> discrepancias puntuales detectadas quedan anotadas en línea más abajo en
+> vez de reescribir el documento entero.
 
 ---
 
@@ -1365,6 +1380,26 @@ Registrados con Huma v2 (ADR 0006), prefijo `/tenencia`, nombres de recurso en e
 | `POST` | `/tenencia/organizaciones/{idOrganizacion}/invitaciones` | Bearer | `miembro.invitar` | **201** + `VistaInvitacion` (**sin token**) | 401, 403, 404, 409 límite, 429 |
 | `DELETE` | `/tenencia/organizaciones/{idOrganizacion}/invitaciones/{idInvitacion}` | Bearer | `miembro.invitar` | **204** | 401, 403, 404 |
 | `POST` | `/tenencia/invitaciones/aceptaciones` | Bearer | — (ver nota) | **201** + `VistaMiembro` | 401, 404 token inválido, 409 org no operativa, 429 |
+
+> **Nota de discrepancia diseño vs. implementación (código es la fuente de
+> verdad, no se reescribe la tabla de arriba):**
+>
+> - `POST /tenencia/organizaciones/{idOrganizacion}/miembros` (alta
+>   directa) quedó implementado exigiendo **`miembro.invitar`**, no
+>   `miembro.cambiar_rol` como narra la tabla de arriba. El comentario de
+>   `rutas.go` explica el porqué: el catálogo cerrado de 8 permisos no
+>   distingue "invitar por correo" de "dar de alta directamente" — ambas
+>   comparten permiso y regla de dominancia, y separarlas habría exigido un
+>   noveno permiso para una distinción que el producto no pide todavía.
+> - `GET /tenencia/organizaciones/{idOrganizacion}/invitaciones` (listar
+>   invitaciones pendientes de una organización) **no se implementó**:
+>   `rutas.go` no lo registra. Quedó fuera del MVP real sin que se haya
+>   escrito un ADR o una nota de backlog explícita para ello; anotado aquí
+>   para que quien lo necesite sepa que hoy no existe, no para reabrir la
+>   decisión.
+>
+> Ver el detalle completo, con ejemplos de request/response, en
+> `internal/tenencia/README.md`.
 
 **`POST /tenencia/invitaciones/aceptaciones` no cuelga de `/organizaciones/{id}` y eso es deliberado, no una inconsistencia de nomenclatura**: quien acepta todavía no es miembro de ninguna organización, así que el middleware de autorización no tiene nada contra qué autorizarlo. Colgarlo de la ruta con `{idOrganizacion}` obligaría a introducir una excepción en el middleware —"esta ruta lleva `{idOrganizacion}` pero no la autorices"— que es exactamente la clase de excepción que después alguien copia en otra ruta por error. Además, el cliente que llega desde el enlace del correo tiene el token, no el ID de la organización. Es el mismo criterio por el que `/.well-known/jwks.json` de Acceso quedó fuera del prefijo `/acceso`.
 
