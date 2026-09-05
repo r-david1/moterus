@@ -71,8 +71,14 @@ func (e *ErrCuentaNoOperativa) Error() string { return "cuenta no operativa: " +
 
 // ErrSegundoFactorRequerido se produce cuando Identidad indicó que la
 // autenticación exige un segundo factor. No se emite sesión ni token de
-// acceso alguno (INV-ACC-03).
-type ErrSegundoFactorRequerido struct{ MotivoStepUp string }
+// acceso alguno (INV-ACC-03). TokenStepUp lleva el JWT de vida corta (ADR
+// 0038) que el cliente debe presentar en POST /acceso/sesiones/segundo-factor
+// junto con el código OTP; campo aditivo, no cambia Error() ni rompe a quien
+// ya construye este error solo con MotivoStepUp.
+type ErrSegundoFactorRequerido struct {
+	MotivoStepUp string
+	TokenStepUp  string
+}
 
 func (e *ErrSegundoFactorRequerido) Error() string { return "se requiere segundo factor" }
 

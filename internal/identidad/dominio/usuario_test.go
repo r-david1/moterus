@@ -343,6 +343,42 @@ func TestUsuario_RegistrarAcceso(t *testing.T) {
 	}
 }
 
+// TestUsuario_HabilitarMFA_DeshabilitarMFA verifica el flip coordinado del
+// flag TieneMFA (§3.2/§3.3 de docs/design/otp-mfa.md, INV-ID-08): ninguno de
+// los dos métodos acumula su propio evento — la auditoría la cubre el
+// agregado FactorMFA (FactorMFAConfirmado/FactorMFADeshabilitado).
+func TestUsuario_HabilitarMFA_DeshabilitarMFA(t *testing.T) {
+	u, ahora := usuarioDePrueba(t)
+	u.EventosPendientes() // drena UsuarioRegistrado, no es objeto de este test
+	if u.TieneMFA() {
+		t.Fatal("un usuario recién registrado no debe tener MFA")
+	}
+
+	tras := ahora.Add(time.Minute)
+	u.HabilitarMFA(tras)
+	if !u.TieneMFA() {
+		t.Error("HabilitarMFA debe activar TieneMFA")
+	}
+	if !u.ActualizadoEn().Equal(tras) {
+		t.Errorf("ActualizadoEn() = %v, esperado %v", u.ActualizadoEn(), tras)
+	}
+	if len(u.EventosPendientes()) != 0 {
+		t.Error("HabilitarMFA no debe acumular su propio evento (lo emite FactorMFA)")
+	}
+
+	masTarde := tras.Add(time.Minute)
+	u.DeshabilitarMFA(masTarde)
+	if u.TieneMFA() {
+		t.Error("DeshabilitarMFA debe desactivar TieneMFA")
+	}
+	if !u.ActualizadoEn().Equal(masTarde) {
+		t.Errorf("ActualizadoEn() = %v, esperado %v", u.ActualizadoEn(), masTarde)
+	}
+	if len(u.EventosPendientes()) != 0 {
+		t.Error("DeshabilitarMFA no debe acumular su propio evento (lo emite FactorMFA)")
+	}
+}
+
 // TestINV_ID_06_SoloActivoPuedeIniciarSesion verifica que solo el estado
 // activo permite iniciar sesión, y que cada otro estado produce el error
 // específico correspondiente.

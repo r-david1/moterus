@@ -247,3 +247,105 @@ func NuevoUsuarioConsultado(idUsuario, idSolicitante string, ocurridoEn time.Tim
 func (e UsuarioConsultado) NombreEvento() string  { return "UsuarioConsultado" }
 func (e UsuarioConsultado) OcurridoEn() time.Time { return e.ocurridoEn }
 func (e UsuarioConsultado) IDAgregado() string    { return e.IDUsuario }
+
+// --- eventos de la extensión OTP/MFA (§1.6 de docs/design/otp-mfa.md) ------
+
+// FactorMFAHabilitado se emite cuando se genera un nuevo secreto TOTP y se
+// crea el FactorMFA sin confirmar todavía (accion de auditoría:
+// usuario.mfa_habilitado). Se audita aunque el factor todavía no active
+// nada: es una operación sensible por sí sola.
+type FactorMFAHabilitado struct {
+	IDUsuario  string
+	IDFactor   string
+	ocurridoEn time.Time
+}
+
+// NuevoFactorMFAHabilitado construye el evento FactorMFAHabilitado.
+func NuevoFactorMFAHabilitado(idUsuario IDUsuario, idFactor IDFactorMFA, ocurridoEn time.Time) FactorMFAHabilitado {
+	return FactorMFAHabilitado{IDUsuario: idUsuario.String(), IDFactor: idFactor.String(), ocurridoEn: ocurridoEn}
+}
+
+func (e FactorMFAHabilitado) NombreEvento() string  { return "FactorMFAHabilitado" }
+func (e FactorMFAHabilitado) OcurridoEn() time.Time { return e.ocurridoEn }
+func (e FactorMFAHabilitado) IDAgregado() string    { return e.IDUsuario }
+
+// FactorMFAConfirmado se emite cuando el primer código TOTP correcto
+// confirma el factor — el instante exacto en que Usuario.tieneMFA pasa a
+// true (INV-ID-08/INV-MFA-01) (accion de auditoría: usuario.mfa_confirmado).
+type FactorMFAConfirmado struct {
+	IDUsuario  string
+	IDFactor   string
+	ocurridoEn time.Time
+}
+
+// NuevoFactorMFAConfirmado construye el evento FactorMFAConfirmado.
+func NuevoFactorMFAConfirmado(idUsuario IDUsuario, idFactor IDFactorMFA, ocurridoEn time.Time) FactorMFAConfirmado {
+	return FactorMFAConfirmado{IDUsuario: idUsuario.String(), IDFactor: idFactor.String(), ocurridoEn: ocurridoEn}
+}
+
+func (e FactorMFAConfirmado) NombreEvento() string  { return "FactorMFAConfirmado" }
+func (e FactorMFAConfirmado) OcurridoEn() time.Time { return e.ocurridoEn }
+func (e FactorMFAConfirmado) IDAgregado() string    { return e.IDUsuario }
+
+// FactorMFADeshabilitado se emite cuando el usuario desactiva su segundo
+// factor, tras demostrar posesión con un código propio (ADR 0039) (accion
+// de auditoría: usuario.mfa_deshabilitado).
+type FactorMFADeshabilitado struct {
+	IDUsuario  string
+	IDFactor   string
+	ocurridoEn time.Time
+}
+
+// NuevoFactorMFADeshabilitado construye el evento FactorMFADeshabilitado.
+func NuevoFactorMFADeshabilitado(idUsuario IDUsuario, idFactor IDFactorMFA, ocurridoEn time.Time) FactorMFADeshabilitado {
+	return FactorMFADeshabilitado{IDUsuario: idUsuario.String(), IDFactor: idFactor.String(), ocurridoEn: ocurridoEn}
+}
+
+func (e FactorMFADeshabilitado) NombreEvento() string  { return "FactorMFADeshabilitado" }
+func (e FactorMFADeshabilitado) OcurridoEn() time.Time { return e.ocurridoEn }
+func (e FactorMFADeshabilitado) IDAgregado() string    { return e.IDUsuario }
+
+// CodigoRespaldoConsumido se emite cuando un código de respaldo de un solo
+// uso se consume con éxito durante FactorMFA.VerificarCodigo.
+// CodigosRestantes permite que el propio usuario vea en su historial
+// cuántos le quedan (accion de auditoría: usuario.codigo_respaldo_consumido).
+type CodigoRespaldoConsumido struct {
+	IDUsuario        string
+	IDFactor         string
+	CodigosRestantes int
+	ocurridoEn       time.Time
+}
+
+// NuevoCodigoRespaldoConsumido construye el evento CodigoRespaldoConsumido.
+func NuevoCodigoRespaldoConsumido(idUsuario IDUsuario, idFactor IDFactorMFA, codigosRestantes int, ocurridoEn time.Time) CodigoRespaldoConsumido {
+	return CodigoRespaldoConsumido{
+		IDUsuario:        idUsuario.String(),
+		IDFactor:         idFactor.String(),
+		CodigosRestantes: codigosRestantes,
+		ocurridoEn:       ocurridoEn,
+	}
+}
+
+func (e CodigoRespaldoConsumido) NombreEvento() string  { return "CodigoRespaldoConsumido" }
+func (e CodigoRespaldoConsumido) OcurridoEn() time.Time { return e.ocurridoEn }
+func (e CodigoRespaldoConsumido) IDAgregado() string    { return e.IDUsuario }
+
+// VerificacionOTPFallida se emite cuando un código presentado en el flujo
+// de step-up no coincide ni con el TOTP esperado ni con ningún código de
+// respaldo disponible — señal de un ataque de fuerza bruta sobre el segundo
+// factor de una cuenta concreta, por eso se audita a diferencia de una
+// validación de token cualquiera de Acceso (accion de auditoría:
+// usuario.otp_verificacion_fallida).
+type VerificacionOTPFallida struct {
+	IDUsuario  string
+	ocurridoEn time.Time
+}
+
+// NuevoVerificacionOTPFallida construye el evento VerificacionOTPFallida.
+func NuevoVerificacionOTPFallida(idUsuario IDUsuario, ocurridoEn time.Time) VerificacionOTPFallida {
+	return VerificacionOTPFallida{IDUsuario: idUsuario.String(), ocurridoEn: ocurridoEn}
+}
+
+func (e VerificacionOTPFallida) NombreEvento() string  { return "VerificacionOTPFallida" }
+func (e VerificacionOTPFallida) OcurridoEn() time.Time { return e.ocurridoEn }
+func (e VerificacionOTPFallida) IDAgregado() string    { return e.IDUsuario }

@@ -62,6 +62,46 @@ func esUUIDNulo(v string) bool {
 	return strings.EqualFold(v, "00000000-0000-0000-0000-000000000000")
 }
 
+// IDFactorMFA identifica de forma única a un FactorMFA, agregado propio del
+// contexto Identidad que representa un segundo factor de autenticación
+// (§1.2 de docs/design/otp-mfa.md). Solo valida forma (UUID sintácticamente
+// correcto y no nulo); la generación de IDs nuevos es responsabilidad del
+// puerto GeneradorIDs de infraestructura, igual que IDUsuario — el dominio
+// nunca genera UUIDs por sí mismo.
+type IDFactorMFA struct {
+	valor string
+}
+
+// IDFactorMFADesde valida y envuelve un identificador ya existente (p. ej.
+// al leerlo de la base de datos o de un parámetro de comando).
+func IDFactorMFADesde(valor string) (IDFactorMFA, error) {
+	v := strings.TrimSpace(valor)
+	if !esUUIDValido(v) {
+		return IDFactorMFA{}, &ErrIDFactorMFAInvalido{Motivo: "no es un UUID válido"}
+	}
+	if esUUIDNulo(v) {
+		return IDFactorMFA{}, &ErrIDFactorMFAInvalido{Motivo: "no puede ser el UUID nulo"}
+	}
+	return IDFactorMFA{valor: strings.ToLower(v)}, nil
+}
+
+// String devuelve la representación canónica en minúsculas del UUID.
+func (id IDFactorMFA) String() string { return id.valor }
+
+// EsVacio indica si el value object nunca fue construido (zero value).
+func (id IDFactorMFA) EsVacio() bool { return id.valor == "" }
+
+// EsIgual compara dos identificadores por su valor.
+func (id IDFactorMFA) EsIgual(otro IDFactorMFA) bool { return id.valor == otro.valor }
+
+// ErrIDFactorMFAInvalido se produce al construir un IDFactorMFA con un
+// formato inválido o con el UUID nulo.
+type ErrIDFactorMFAInvalido struct{ Motivo string }
+
+func (e *ErrIDFactorMFAInvalido) Error() string {
+	return "identificador de factor MFA inválido: " + e.Motivo
+}
+
 // ErrIDUsuarioInvalido se produce al construir un IDUsuario con un formato
 // inválido o con el UUID nulo.
 type ErrIDUsuarioInvalido struct{ Motivo string }

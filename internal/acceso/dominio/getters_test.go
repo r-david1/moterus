@@ -260,3 +260,26 @@ func TestErrores_MensajesNoVacios(t *testing.T) {
 		}
 	}
 }
+
+// TestErrSegundoFactorRequerido_TokenStepUpEsAditivo verifica que el campo
+// TokenStepUp (ADR 0038) es puramente aditivo: construir el error solo con
+// MotivoStepUp (como ya hacía todo el código existente antes de esta
+// extensión) sigue funcionando, y el mensaje de Error() no cambia según se
+// provea o no TokenStepUp.
+func TestErrSegundoFactorRequerido_TokenStepUpEsAditivo(t *testing.T) {
+	sinToken := &ErrSegundoFactorRequerido{MotivoStepUp: "mfa_habilitado"}
+	conToken := &ErrSegundoFactorRequerido{MotivoStepUp: "mfa_habilitado", TokenStepUp: "eyJhbGciOiJFZERTQSJ9.compacto.firma"}
+
+	if sinToken.Error() != conToken.Error() {
+		t.Errorf("Error() no debe depender de TokenStepUp: %q vs %q", sinToken.Error(), conToken.Error())
+	}
+	if sinToken.TokenStepUp != "" {
+		t.Errorf("TokenStepUp debe quedar vacío si no se provee, obtuvo %q", sinToken.TokenStepUp)
+	}
+	if conToken.TokenStepUp == "" {
+		t.Error("TokenStepUp debe conservar el valor provisto")
+	}
+	if conToken.MotivoStepUp != "mfa_habilitado" {
+		t.Errorf("MotivoStepUp = %q, esperado %q", conToken.MotivoStepUp, "mfa_habilitado")
+	}
+}

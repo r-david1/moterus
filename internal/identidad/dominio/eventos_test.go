@@ -17,6 +17,7 @@ import (
 func TestINV_ID_04_EventosNuncaTransportanSecretos(t *testing.T) {
 	ahora := time.Now()
 	id, _ := IDUsuarioDesde("018e6f2a-9c3d-7c3a-8b3a-1e2f3a4b5c6d")
+	idFactor, _ := IDFactorMFADesde("018e6f2a-9c3d-7c3a-8b3a-1e2f3a4b5c99")
 	correo, _ := NuevoCorreo("usuario@ejemplo.com")
 
 	eventos := []EventoDominio{
@@ -32,10 +33,16 @@ func TestINV_ID_04_EventosNuncaTransportanSecretos(t *testing.T) {
 		NuevoVerificacionCorreoFallida(id.String(), "token_expirado", ahora),
 		NuevoEstadoUsuarioCambiado(id, EstadoActivo, EstadoSuspendido, "motivo", ahora),
 		NuevoUsuarioConsultado(id.String(), "otro-id", ahora),
+		// Extensión OTP/MFA (§1.6 de docs/design/otp-mfa.md).
+		NuevoFactorMFAHabilitado(id, idFactor, ahora),
+		NuevoFactorMFAConfirmado(id, idFactor, ahora),
+		NuevoFactorMFADeshabilitado(id, idFactor, ahora),
+		NuevoCodigoRespaldoConsumido(id, idFactor, 9, ahora),
+		NuevoVerificacionOTPFallida(id, ahora),
 	}
 
-	if len(eventos) != 12 {
-		t.Fatalf("se esperaban 12 eventos de dominio (tabla 1.6 + sección 3.4), hay %d", len(eventos))
+	if len(eventos) != 17 {
+		t.Fatalf("se esperaban 17 eventos de dominio (tabla 1.6 + sección 3.4 + extensión OTP/MFA), hay %d", len(eventos))
 	}
 
 	tipoContrasenaPlana := reflect.TypeOf(ContrasenaPlana{})
@@ -70,6 +77,7 @@ func TestINV_ID_04_EventosNuncaTransportanSecretos(t *testing.T) {
 func TestEventos_NombresUnicos(t *testing.T) {
 	ahora := time.Now()
 	id, _ := IDUsuarioDesde("018e6f2a-9c3d-7c3a-8b3a-1e2f3a4b5c6d")
+	idFactor, _ := IDFactorMFADesde("018e6f2a-9c3d-7c3a-8b3a-1e2f3a4b5c99")
 	correo, _ := NuevoCorreo("usuario@ejemplo.com")
 
 	eventos := []EventoDominio{
@@ -85,6 +93,11 @@ func TestEventos_NombresUnicos(t *testing.T) {
 		NuevoVerificacionCorreoFallida(id.String(), "y", ahora),
 		NuevoEstadoUsuarioCambiado(id, EstadoActivo, EstadoSuspendido, "y", ahora),
 		NuevoUsuarioConsultado(id.String(), "otro", ahora),
+		NuevoFactorMFAHabilitado(id, idFactor, ahora),
+		NuevoFactorMFAConfirmado(id, idFactor, ahora),
+		NuevoFactorMFADeshabilitado(id, idFactor, ahora),
+		NuevoCodigoRespaldoConsumido(id, idFactor, 9, ahora),
+		NuevoVerificacionOTPFallida(id, ahora),
 	}
 	vistos := map[string]bool{}
 	for _, ev := range eventos {
@@ -101,6 +114,7 @@ func TestEventos_NombresUnicos(t *testing.T) {
 func TestEventos_IDAgregado_ApuntaAlUsuario(t *testing.T) {
 	ahora := time.Now()
 	id, _ := IDUsuarioDesde("018e6f2a-9c3d-7c3a-8b3a-1e2f3a4b5c6d")
+	idFactor, _ := IDFactorMFADesde("018e6f2a-9c3d-7c3a-8b3a-1e2f3a4b5c99")
 	correo, _ := NuevoCorreo("usuario@ejemplo.com")
 
 	casos := []EventoDominio{
@@ -114,6 +128,11 @@ func TestEventos_IDAgregado_ApuntaAlUsuario(t *testing.T) {
 		NuevoVerificacionCorreoFallida(id.String(), "motivo", ahora),
 		NuevoEstadoUsuarioCambiado(id, EstadoActivo, EstadoSuspendido, "motivo", ahora),
 		NuevoUsuarioConsultado(id.String(), "otro-id", ahora),
+		NuevoFactorMFAHabilitado(id, idFactor, ahora),
+		NuevoFactorMFAConfirmado(id, idFactor, ahora),
+		NuevoFactorMFADeshabilitado(id, idFactor, ahora),
+		NuevoCodigoRespaldoConsumido(id, idFactor, 9, ahora),
+		NuevoVerificacionOTPFallida(id, ahora),
 	}
 	for _, ev := range casos {
 		if ev.IDAgregado() != id.String() {

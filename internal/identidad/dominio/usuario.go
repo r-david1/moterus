@@ -256,6 +256,30 @@ func (u *Usuario) PuedeIniciarSesion() error {
 	}
 }
 
+// --- MFA (flip coordinado, §3.2/§3.3 de docs/design/otp-mfa.md) -----------
+
+// HabilitarMFA activa el flag TieneMFA. Lo invoca el caso de uso
+// ConfirmarFactorMFA en la misma unidad de trabajo en que
+// FactorMFA.Confirmar tiene éxito (INV-ID-08/INV-MFA-01: el flag se activa
+// exactamente ahí, nunca al generar el secreto). No acumula su propio
+// evento: la auditoría de esta operación ya la cubre FactorMFAConfirmado,
+// emitido por el agregado FactorMFA — duplicarla aquí auditaría el mismo
+// hecho de negocio dos veces.
+func (u *Usuario) HabilitarMFA(ahora time.Time) {
+	u.tieneMFA = true
+	u.actualizadoEn = ahora
+}
+
+// DeshabilitarMFA desactiva el flag TieneMFA. Lo invoca el caso de uso
+// DeshabilitarMFA cuando, tras eliminar el factor verificado, no queda
+// ningún otro FactorMFA confirmado (hoy siempre: el MVP admite un único
+// factor por usuario, ADR 0037). No acumula su propio evento:
+// FactorMFA.Deshabilitar ya emite FactorMFADeshabilitado.
+func (u *Usuario) DeshabilitarMFA(ahora time.Time) {
+	u.tieneMFA = false
+	u.actualizadoEn = ahora
+}
+
 // --- eventos ------------------------------------------------------------
 
 // EventosPendientes drena los eventos acumulados por el agregado: los

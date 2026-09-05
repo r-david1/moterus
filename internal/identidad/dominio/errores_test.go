@@ -24,6 +24,11 @@ func TestErrores_ImplementanInterfazError(t *testing.T) {
 		&ErrConcurrenciaUsuario{},
 		&ErrTokenVerificacionInvalido{},
 		&ErrTokenVerificacionExpirado{},
+		&ErrFactorMFANoEncontrado{},
+		&ErrFactorMFAYaConfirmado{},
+		&ErrCodigoOTPInvalido{},
+		&ErrLimiteFactoresMFAExcedido{},
+		&ErrCodigoRespaldoYaUsado{},
 	}
 	for _, err := range todos {
 		if err.Error() == "" {

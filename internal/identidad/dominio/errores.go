@@ -129,3 +129,41 @@ func (e *ErrTokenVerificacionInvalido) Error() string { return "token de verific
 type ErrTokenVerificacionExpirado struct{}
 
 func (e *ErrTokenVerificacionExpirado) Error() string { return "token de verificación expirado" }
+
+// Errores de la extensión OTP/MFA (docs/design/otp-mfa.md, §4 invariantes
+// INV-MFA-01 a 08; INV-MFA-01 es un alias de INV-ID-08 ya numerado arriba,
+// no se le asigna un número nuevo).
+
+// ErrFactorMFANoEncontrado se produce cuando el FactorMFA referenciado no
+// existe o no pertenece al sujeto que lo solicita.
+type ErrFactorMFANoEncontrado struct{}
+
+func (e *ErrFactorMFANoEncontrado) Error() string { return "factor MFA no encontrado" }
+
+// ErrFactorMFAYaConfirmado se produce al intentar confirmar un FactorMFA
+// que ya fue confirmado anteriormente.
+type ErrFactorMFAYaConfirmado struct{}
+
+func (e *ErrFactorMFAYaConfirmado) Error() string { return "el factor MFA ya está confirmado" }
+
+// ErrCodigoOTPInvalido se produce cuando un código TOTP o de respaldo
+// presentado no es válido. Deliberadamente genérico, mismo criterio que
+// ErrCredencialesInvalidas (INV-MFA-08): no distingue "código incorrecto"
+// de "código expirado" ni de "código ya usado" en su mensaje observable.
+type ErrCodigoOTPInvalido struct{}
+
+func (e *ErrCodigoOTPInvalido) Error() string { return "código de verificación inválido" }
+
+// ErrLimiteFactoresMFAExcedido se produce al intentar habilitar un nuevo
+// FactorMFA cuando el sujeto ya alcanzó el máximo de factores confirmados
+// permitido por el MVP (uno, ADR 0037).
+type ErrLimiteFactoresMFAExcedido struct{}
+
+func (e *ErrLimiteFactoresMFAExcedido) Error() string { return "límite de factores MFA excedido" }
+
+// ErrCodigoRespaldoYaUsado se produce al intentar consumir un
+// CodigoRespaldoMFA que ya se había consumido antes (INV-MFA-06: un código
+// de respaldo se consume una sola vez, sin excepción).
+type ErrCodigoRespaldoYaUsado struct{}
+
+func (e *ErrCodigoRespaldoYaUsado) Error() string { return "código de respaldo ya utilizado" }
