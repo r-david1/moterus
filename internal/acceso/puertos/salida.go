@@ -242,3 +242,51 @@ type LlavePublica struct {
 	KID, TipoLlave, Curva, Algoritmo string
 	Material                         []byte
 }
+
+// --- Step-up MFA (ADR 0038, docs/design/otp-mfa.md §2.4) --------------------
+
+// TokenStepUp es el token de vida corta que EmisorTokenStepUp produce.
+// Deliberadamente NO es una dominio.Sesion: no tiene fila en `sesiones`, no
+// tiene refresco, y jamás debe aceptarse donde se espera un token de
+// acceso normal (INV-MFA-03). El único dato observable desde fuera de este
+// paquete es su representación compacta ya firmada; quien necesite
+// inspeccionar sus claims debe volver a pasarlo por
+// EmisorTokenStepUp.Validar, nunca decodificarlo a mano.
+type TokenStepUp struct {
+	compacto string
+}
+
+// NuevoTokenStepUp envuelve la representación JWT compacta que el
+// adaptador de infraestructura (jwx/v2, ADR 0038) ya firmó. Este paquete no
+// firma nada por sí mismo: solo transporta el resultado que la
+// infraestructura produjo.
+func NuevoTokenStepUp(compacto string) TokenStepUp { return TokenStepUp{compacto: compacto} }
+
+// Compacto devuelve la representación JWT compacta firmada, la que el
+// cliente reenvía en POST /acceso/sesiones/segundo-factor.
+func (t TokenStepUp) Compacto() string { return t.compacto }
+
+// ClaimsStepUp es la salida de EmisorTokenStepUp.Validar. Deliberadamente
+// primitivos (no VOs de Identidad): acceso/puertos no importa nada de
+// identidad/dominio ni identidad/puertos (INV-ACC-19), y estos claims no
+// son lenguaje ubicuo de Identidad sino el contrato propio, mínimo, de
+// este token de un solo propósito.
+type ClaimsStepUp struct {
+	IDUsuario    string
+	MotivoStepUp string
+}
+
+// EmisorTokenStepUp emite y valida el token de step-up (ADR 0038): un JWT
+// propio de Acceso, de vida corta (INV-MFA-04: 5 minutos, sin refresco
+// posible), que representa "credenciales OK, falta el segundo factor".
+// Nunca lo emite Identidad (ADR 0009: Acceso nunca deja que Identidad
+// emita tokens) — Identidad solo decide, vía ResultadoAutenticacion, que
+// hace falta un segundo factor; emitir el token que lo representa es
+// trabajo de Acceso. Validar debe verificar, además de firma y expiración,
+// que el `typ` de cabecera sea el distintivo de step-up y nunca el de un
+// token de acceso normal (INV-MFA-03, mismo criterio de defensa contra
+// *algorithm/type confusion* que ya aplica FirmadorTokensAcceso.Verificar).
+type EmisorTokenStepUp interface {
+	Emitir(ctx context.Context, idUsuario string, motivoStepUp string, ahora time.Time) (TokenStepUp, error)
+	Validar(ctx context.Context, tokenCompacto string) (ClaimsStepUp, error)
+}

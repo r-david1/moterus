@@ -131,3 +131,77 @@ type VerificadorDeCorreo interface {
 type ReenviadorDeVerificacion interface {
 	Reenviar(ctx context.Context, cmd ComandoReenviarVerificacion) error
 }
+
+// --- MFA / OTP (sección 2.1 de docs/design/otp-mfa.md) ----------------------
+
+// ComandoHabilitarMFA transporta la entrada del caso de uso HabilitarMFA
+// (§3.1 del diseño otp-mfa.md).
+type ComandoHabilitarMFA struct {
+	IDSujeto string
+}
+
+// ResultadoHabilitarMFA es la salida de HabilitarMFA. Lleva el secreto EN
+// CLARO y la URI de provisionamiento — es la única vez que salen del
+// proceso. El cliente los muestra como QR/texto y los descarta; el
+// servidor solo persiste la forma cifrada (INV-MFA-02).
+type ResultadoHabilitarMFA struct {
+	IDFactor            string
+	SecretoEnClaro      string // "[REDACTADO]" si se serializa por descuido
+	URIProvisionamiento string
+}
+
+// ComandoConfirmarFactorMFA transporta la entrada del caso de uso
+// ConfirmarFactorMFA (§3.2 del diseño otp-mfa.md).
+type ComandoConfirmarFactorMFA struct {
+	IDSujeto string
+	IDFactor string
+	Codigo   string
+}
+
+// ResultadoConfirmarMFA es la salida de ConfirmarFactorMFA. Lleva los 10
+// códigos de respaldo EN CLARO — igual que el secreto, solo se ven una vez.
+// El cliente debe guardarlos ahora o nunca más los va a poder leer (solo su
+// hash queda en la base, ADR 0040).
+type ResultadoConfirmarMFA struct {
+	CodigosRespaldo []string
+}
+
+// ComandoDeshabilitarMFA transporta la entrada del caso de uso
+// DeshabilitarMFA (§3.3 del diseño otp-mfa.md). Codigo es obligatorio
+// (TOTP o de respaldo, ver INV-MFA-05/ADR candidato 0039): no basta con
+// estar autenticado con un token de acceso normal para desarmar el
+// segundo factor de la propia cuenta.
+type ComandoDeshabilitarMFA struct {
+	IDSujeto string
+	Codigo   string
+}
+
+// GestorDeMFA es el puerto de entrada para el autoservicio de MFA del
+// propio usuario (§2.1 del diseño otp-mfa.md). Todas las operaciones
+// actúan sobre el sujeto autenticado (IDSujeto viene siempre del token ya
+// validado, nunca de un parámetro que el cliente controle — mismo criterio
+// que INV-TEN-12/INV-ACC-23).
+type GestorDeMFA interface {
+	Habilitar(ctx context.Context, cmd ComandoHabilitarMFA) (ResultadoHabilitarMFA, error)
+	ConfirmarFactor(ctx context.Context, cmd ComandoConfirmarFactorMFA) (ResultadoConfirmarMFA, error)
+	Deshabilitar(ctx context.Context, cmd ComandoDeshabilitarMFA) error
+}
+
+// ConsultaVerificarOTP transporta la entrada de VerificadorOTP.Verificar.
+type ConsultaVerificarOTP struct {
+	IDUsuario string
+	Codigo    string
+	Origen    dominio.OrigenSolicitud
+}
+
+// VerificadorOTP es el puerto que ACCESO consume (vía su ACL hacia
+// Identidad, mismo mecanismo que ya usa para AutenticadorDeCredenciales/
+// ConsultorDeUsuarios) para completar el flujo de step-up (§3.4 del diseño
+// otp-mfa.md, caso de uso VerificarOTP). Deliberadamente angosto: Acceso
+// nunca ve un FactorMFA, un secreto, ni una lista de factores — solo
+// pregunta "¿este código es válido para este usuario, ahora mismo?"
+// (INV-MFA-08: la respuesta no distingue código incorrecto de "sin ningún
+// factor confirmado").
+type VerificadorOTP interface {
+	Verificar(ctx context.Context, q ConsultaVerificarOTP) (bool, error)
+}

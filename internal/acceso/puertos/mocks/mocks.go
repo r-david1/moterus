@@ -391,3 +391,43 @@ func (m *PublicadorEventos) Publicar(ctx context.Context, eventos ...dominio.Eve
 	}
 	return nil
 }
+
+// --- EmisorTokenStepUp (ADR 0038) --------------------------------------------
+
+// EmisorTokenStepUp es el test double de puertos.EmisorTokenStepUp. Por
+// defecto (sin configurar), Emitir devuelve un TokenStepUp no vacío y
+// Validar devuelve ClaimsStepUp{} sin error — los tests que verifican el
+// contenido real de las claims deben configurar FnValidar explícitamente.
+type EmisorTokenStepUp struct {
+	FnEmitir  func(ctx context.Context, idUsuario string, motivoStepUp string, ahora time.Time) (puertos.TokenStepUp, error)
+	FnValidar func(ctx context.Context, tokenCompacto string) (puertos.ClaimsStepUp, error)
+
+	LlamadasEmitir  []EmitirStepUpLlamada
+	LlamadasValidar []string
+}
+
+// EmitirStepUpLlamada captura los argumentos de una llamada a Emitir, para
+// que los tests puedan hacer aserciones sobre ellos.
+type EmitirStepUpLlamada struct {
+	IDUsuario    string
+	MotivoStepUp string
+	Ahora        time.Time
+}
+
+var _ puertos.EmisorTokenStepUp = (*EmisorTokenStepUp)(nil)
+
+func (m *EmisorTokenStepUp) Emitir(ctx context.Context, idUsuario string, motivoStepUp string, ahora time.Time) (puertos.TokenStepUp, error) {
+	m.LlamadasEmitir = append(m.LlamadasEmitir, EmitirStepUpLlamada{IDUsuario: idUsuario, MotivoStepUp: motivoStepUp, Ahora: ahora})
+	if m.FnEmitir != nil {
+		return m.FnEmitir(ctx, idUsuario, motivoStepUp, ahora)
+	}
+	return puertos.NuevoTokenStepUp("token-step-up-de-prueba-compacto"), nil
+}
+
+func (m *EmisorTokenStepUp) Validar(ctx context.Context, tokenCompacto string) (puertos.ClaimsStepUp, error) {
+	m.LlamadasValidar = append(m.LlamadasValidar, tokenCompacto)
+	if m.FnValidar != nil {
+		return m.FnValidar(ctx, tokenCompacto)
+	}
+	return puertos.ClaimsStepUp{}, nil
+}

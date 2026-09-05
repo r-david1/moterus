@@ -172,3 +172,40 @@ type AutorizadorDeConsultas interface {
 	// autorizado" por defecto.
 	PuedeConsultar(ctx context.Context, idSolicitante, idObjetivo, idOrganizacion string) (bool, error)
 }
+
+// --- MFA / OTP (sección 2.2 de docs/design/otp-mfa.md) ----------------------
+
+// RepositorioFactoresMFA es el puerto de salida para la persistencia del
+// agregado FactorMFA.
+type RepositorioFactoresMFA interface {
+	Guardar(ctx context.Context, f *dominio.FactorMFA) error
+	BuscarPorID(ctx context.Context, id dominio.IDFactorMFA) (*dominio.FactorMFA, error)
+	// BuscarConfirmadosDeUsuario es el camino caliente de VerificarOTP en
+	// cada login — normalmente devuelve 0 o 1 fila (el MVP no ofrece
+	// múltiples factores simultáneos, aunque el esquema no lo impide para
+	// el futuro).
+	BuscarConfirmadosDeUsuario(ctx context.Context, u dominio.IDUsuario) ([]*dominio.FactorMFA, error)
+	ContarConfirmadosDeUsuario(ctx context.Context, u dominio.IDUsuario) (int, error)
+}
+
+// GeneradorSecretoTOTP produce el secreto de alta entropía y los códigos de
+// respaldo de un factor MFA. El dominio nunca genera bytes aleatorios por
+// sí mismo.
+type GeneradorSecretoTOTP interface {
+	GenerarSecreto() (dominio.SecretoTOTPPlano, error)
+	GenerarCodigosRespaldo(n int) ([]dominio.CodigoRespaldoPlano, error)
+}
+
+// CifradorSecretos cifra/descifra el secreto TOTP en reposo. A diferencia
+// de HasherContrasenas (Argon2id, de un solo sentido), esto es cifrado
+// SIMÉTRICO REVERSIBLE: el servidor tiene que poder leer el secreto en
+// claro para computar, en cada verificación, el código TOTP esperado a
+// partir de él — un hash de un solo sentido no serviría para eso. La
+// implementación de infraestructura futura es AES-256-GCM, con la llave
+// desde configuración (mismo patrón de gestión que ACCESO_LLAVE_FIRMA — ver
+// ADR 0038 sobre dónde vive esa llave y el comportamiento fail-closed en
+// producción).
+type CifradorSecretos interface {
+	Cifrar(secreto dominio.SecretoTOTPPlano) (dominio.SecretoTOTPCifrado, error)
+	Descifrar(cifrado dominio.SecretoTOTPCifrado) (dominio.SecretoTOTPPlano, error)
+}

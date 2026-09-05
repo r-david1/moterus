@@ -15,6 +15,8 @@ package mocks
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/r-david1/moterus/internal/identidad/dominio"
@@ -368,4 +370,127 @@ func (m *NotificadorCorreo) EnviarVerificacion(ctx context.Context, correo domin
 		return m.FnEnviarVerificacion(ctx, correo, tokenPlano)
 	}
 	return nil
+}
+
+// --- RepositorioFactoresMFA ---------------------------------------------------
+
+// RepositorioFactoresMFA es el test double de
+// puertos.RepositorioFactoresMFA.
+type RepositorioFactoresMFA struct {
+	FnGuardar                    func(ctx context.Context, f *dominio.FactorMFA) error
+	FnBuscarPorID                func(ctx context.Context, id dominio.IDFactorMFA) (*dominio.FactorMFA, error)
+	FnBuscarConfirmadosDeUsuario func(ctx context.Context, u dominio.IDUsuario) ([]*dominio.FactorMFA, error)
+	FnContarConfirmadosDeUsuario func(ctx context.Context, u dominio.IDUsuario) (int, error)
+
+	LlamadasGuardar                    []*dominio.FactorMFA
+	LlamadasBuscarPorID                []dominio.IDFactorMFA
+	LlamadasBuscarConfirmadosDeUsuario []dominio.IDUsuario
+	LlamadasContarConfirmadosDeUsuario []dominio.IDUsuario
+}
+
+var _ puertos.RepositorioFactoresMFA = (*RepositorioFactoresMFA)(nil)
+
+func (m *RepositorioFactoresMFA) Guardar(ctx context.Context, f *dominio.FactorMFA) error {
+	m.LlamadasGuardar = append(m.LlamadasGuardar, f)
+	if m.FnGuardar != nil {
+		return m.FnGuardar(ctx, f)
+	}
+	return nil
+}
+
+func (m *RepositorioFactoresMFA) BuscarPorID(ctx context.Context, id dominio.IDFactorMFA) (*dominio.FactorMFA, error) {
+	m.LlamadasBuscarPorID = append(m.LlamadasBuscarPorID, id)
+	if m.FnBuscarPorID != nil {
+		return m.FnBuscarPorID(ctx, id)
+	}
+	return nil, nil
+}
+
+func (m *RepositorioFactoresMFA) BuscarConfirmadosDeUsuario(ctx context.Context, u dominio.IDUsuario) ([]*dominio.FactorMFA, error) {
+	m.LlamadasBuscarConfirmadosDeUsuario = append(m.LlamadasBuscarConfirmadosDeUsuario, u)
+	if m.FnBuscarConfirmadosDeUsuario != nil {
+		return m.FnBuscarConfirmadosDeUsuario(ctx, u)
+	}
+	return nil, nil
+}
+
+func (m *RepositorioFactoresMFA) ContarConfirmadosDeUsuario(ctx context.Context, u dominio.IDUsuario) (int, error) {
+	m.LlamadasContarConfirmadosDeUsuario = append(m.LlamadasContarConfirmadosDeUsuario, u)
+	if m.FnContarConfirmadosDeUsuario != nil {
+		return m.FnContarConfirmadosDeUsuario(ctx, u)
+	}
+	return 0, nil
+}
+
+// --- GeneradorSecretoTOTP ------------------------------------------------------
+
+// GeneradorSecretoTOTP es el test double de puertos.GeneradorSecretoTOTP.
+// Por defecto (sin configurar) devuelve un secreto y códigos de respaldo
+// con forma válida, para que los tests a los que no les interesa el valor
+// concreto no tengan que configurarlo.
+type GeneradorSecretoTOTP struct {
+	FnGenerarSecreto         func() (dominio.SecretoTOTPPlano, error)
+	FnGenerarCodigosRespaldo func(n int) ([]dominio.CodigoRespaldoPlano, error)
+
+	LlamadasGenerarSecreto         int
+	LlamadasGenerarCodigosRespaldo []int
+}
+
+var _ puertos.GeneradorSecretoTOTP = (*GeneradorSecretoTOTP)(nil)
+
+func (m *GeneradorSecretoTOTP) GenerarSecreto() (dominio.SecretoTOTPPlano, error) {
+	m.LlamadasGenerarSecreto++
+	if m.FnGenerarSecreto != nil {
+		return m.FnGenerarSecreto()
+	}
+	return dominio.NuevoSecretoTOTPPlano(strings.Repeat("A", 32))
+}
+
+func (m *GeneradorSecretoTOTP) GenerarCodigosRespaldo(n int) ([]dominio.CodigoRespaldoPlano, error) {
+	m.LlamadasGenerarCodigosRespaldo = append(m.LlamadasGenerarCodigosRespaldo, n)
+	if m.FnGenerarCodigosRespaldo != nil {
+		return m.FnGenerarCodigosRespaldo(n)
+	}
+	codigos := make([]dominio.CodigoRespaldoPlano, 0, n)
+	for i := 0; i < n; i++ {
+		c, err := dominio.NuevoCodigoRespaldoPlano(fmt.Sprintf("ABCDEFGH%02d", i))
+		if err != nil {
+			return nil, err
+		}
+		codigos = append(codigos, c)
+	}
+	return codigos, nil
+}
+
+// --- CifradorSecretos ----------------------------------------------------------
+
+// CifradorSecretos es el test double de puertos.CifradorSecretos. Por
+// defecto, Cifrar envuelve el valor en claro sin transformarlo y Descifrar
+// deshace esa envoltura: suficiente para que los casos de uso que no
+// prueban la criptografía en sí puedan hacer un roundtrip sin configurar
+// nada.
+type CifradorSecretos struct {
+	FnCifrar    func(secreto dominio.SecretoTOTPPlano) (dominio.SecretoTOTPCifrado, error)
+	FnDescifrar func(cifrado dominio.SecretoTOTPCifrado) (dominio.SecretoTOTPPlano, error)
+
+	LlamadasCifrar    []dominio.SecretoTOTPPlano
+	LlamadasDescifrar []dominio.SecretoTOTPCifrado
+}
+
+var _ puertos.CifradorSecretos = (*CifradorSecretos)(nil)
+
+func (m *CifradorSecretos) Cifrar(secreto dominio.SecretoTOTPPlano) (dominio.SecretoTOTPCifrado, error) {
+	m.LlamadasCifrar = append(m.LlamadasCifrar, secreto)
+	if m.FnCifrar != nil {
+		return m.FnCifrar(secreto)
+	}
+	return dominio.NuevoSecretoTOTPCifrado([]byte(secreto.Valor()))
+}
+
+func (m *CifradorSecretos) Descifrar(cifrado dominio.SecretoTOTPCifrado) (dominio.SecretoTOTPPlano, error) {
+	m.LlamadasDescifrar = append(m.LlamadasDescifrar, cifrado)
+	if m.FnDescifrar != nil {
+		return m.FnDescifrar(cifrado)
+	}
+	return dominio.NuevoSecretoTOTPPlano(string(cifrado.Valor()))
 }
