@@ -6,6 +6,12 @@ package aplicacion_test
 // consumidor real (p. ej. el contexto Acceso).
 
 import (
+	"crypto/hmac"
+	"crypto/sha1" //nolint:gosec // RFC 6238 exige SHA-1; mismo motivo que dominio/totp.go.
+	"encoding/base32"
+	"encoding/binary"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -143,4 +149,131 @@ func usuarioConMFADePrueba(t *testing.T, id dominio.IDUsuario, correo dominio.Co
 		t.Fatalf("no se pudo construir la credencial de prueba: %v", err)
 	}
 	return dominio.Reconstituir(id, correo, credencial, dominio.EstadoActivo, true, ahoraDePrueba(), ahoraDePrueba(), nil)
+}
+
+// --- Fixtures de MFA/OTP (docs/design/otp-mfa.md) --------------------------
+//
+// idFactorValido1/2 son dos UUIDs sintácticamente válidos y distintos, mismo
+// criterio que idUsuarioValido1/2.
+const (
+	idFactorValido1 = "018e6f2a-9c3d-7c3a-8b3a-1e2f3a4b5c99"
+	idFactorValido2 = "018e6f2a-9c3d-7c3a-8b3a-1e2f3a4b5c98"
+)
+
+// secretoBase32DePrueba es un secreto TOTP en claro con forma válida (32
+// caracteres Base32, ADR 0037/§1.4 del diseño): 160 bits de entropía no son
+// necesarios para el test, solo la forma estructural que exige
+// dominio.NuevoSecretoTOTPPlano.
+const secretoBase32DePrueba = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+func idFactorDePrueba(t *testing.T, uuid string) dominio.IDFactorMFA {
+	t.Helper()
+	id, err := dominio.IDFactorMFADesde(uuid)
+	if err != nil {
+		t.Fatalf("no se pudo construir el IDFactorMFA de prueba %q: %v", uuid, err)
+	}
+	return id
+}
+
+// secretoCifradoDePrueba envuelve secretoBase32DePrueba como
+// SecretoTOTPCifrado. Coincide con el comportamiento por defecto de
+// mocks.CifradorSecretos (Cifrar/Descifrar hacen un roundtrip sin
+// transformar el valor), así que Descifrar(secretoCifradoDePrueba(t))
+// devuelve de vuelta secretoBase32DePrueba.
+func secretoCifradoDePrueba(t *testing.T) dominio.SecretoTOTPCifrado {
+	t.Helper()
+	c, err := dominio.NuevoSecretoTOTPCifrado([]byte(secretoBase32DePrueba))
+	if err != nil {
+		t.Fatalf("no se pudo construir el secreto cifrado de prueba: %v", err)
+	}
+	return c
+}
+
+// codigoTOTPValidoDePrueba calcula, con el mismo algoritmo que
+// dominio.VerificarCodigo (RFC 6238/RFC 4226: HMAC-SHA1, paso de 30s, 6
+// dígitos), el código TOTP correcto para secretoBase32DePrueba en el
+// instante ahora. Se reimplementa aquí (en lugar de importar un símbolo no
+// exportado de dominio) porque este paquete de test es de caja negra
+// (aplicacion_test) y solo puede depender de la API pública.
+func codigoTOTPValidoDePrueba(t *testing.T, ahora time.Time) string {
+	t.Helper()
+	limpio := strings.ToUpper(strings.TrimRight(secretoBase32DePrueba, "="))
+	clave, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(limpio)
+	if err != nil {
+		t.Fatalf("no se pudo decodificar el secreto de prueba: %v", err)
+	}
+	contador := uint64(ahora.Unix() / 30)
+	var contadorBytes [8]byte
+	binary.BigEndian.PutUint64(contadorBytes[:], contador)
+	mac := hmac.New(sha1.New, clave)
+	mac.Write(contadorBytes[:])
+	suma := mac.Sum(nil)
+	offset := suma[len(suma)-1] & 0x0f
+	codigoBinario := (uint32(suma[offset]&0x7f) << 24) |
+		(uint32(suma[offset+1]) << 16) |
+		(uint32(suma[offset+2]) << 8) |
+		uint32(suma[offset+3])
+	return fmt.Sprintf("%06d", codigoBinario%1000000)
+}
+
+// factorSinConfirmarDePrueba construye, vía dominio.HabilitarFactorMFA, un
+// FactorMFA recién habilitado (sin confirmar) con secretoCifradoDePrueba, y
+// drena su evento FactorMFAHabilitado.
+func factorSinConfirmarDePrueba(t *testing.T, idFactor dominio.IDFactorMFA, idUsuario dominio.IDUsuario) *dominio.FactorMFA {
+	t.Helper()
+	f, err := dominio.HabilitarFactorMFA(idFactor, idUsuario, dominio.TipoFactorTOTP, secretoCifradoDePrueba(t), ahoraDePrueba())
+	if err != nil {
+		t.Fatalf("no se pudo construir el factor de prueba: %v", err)
+	}
+	f.EventosPendientes() // drenar
+	return f
+}
+
+// codigoRespaldoPlanoDePrueba es un código de respaldo con forma válida
+// (10 caracteres del alfabeto restringido de dominio.CodigoRespaldoPlano:
+// sin 0/O/1/I/L).
+const codigoRespaldoPlanoDePrueba = "ABCDEFGH23"
+
+// codigoRespaldoDisponibleDePrueba construye un dominio.CodigoRespaldoMFA
+// disponible cuyo hash corresponde a codigoRespaldoPlanoDePrueba, para
+// fixtures de factores confirmados con códigos de respaldo.
+func codigoRespaldoDisponibleDePrueba(t *testing.T) dominio.CodigoRespaldoMFA {
+	t.Helper()
+	plano, err := dominio.NuevoCodigoRespaldoPlano(codigoRespaldoPlanoDePrueba)
+	if err != nil {
+		t.Fatalf("no se pudo construir el código de respaldo de prueba: %v", err)
+	}
+	return dominio.ReconstituirCodigoRespaldoMFA(plano.Hash(), nil)
+}
+
+// codigosRespaldoValidosDePrueba genera n dominio.CodigoRespaldoPlano con
+// forma válida. Se usa como puertos.GeneradorSecretoTOTP.FnGenerarCodigosRespaldo
+// en lugar del comportamiento por defecto de mocks.GeneradorSecretoTOTP, que
+// produce códigos con '0'/'1' (fuera del alfabeto restringido de
+// dominio.CodigoRespaldoPlano) y siempre falla.
+func codigosRespaldoValidosDePrueba(n int) ([]dominio.CodigoRespaldoPlano, error) {
+	// Alfabeto sin 0/O/1/I/L, mismo criterio que dominio.CodigoRespaldoPlano.
+	const sufijos = "23456789JK"
+	codigos := make([]dominio.CodigoRespaldoPlano, 0, n)
+	for i := 0; i < n; i++ {
+		valor := "ABCDEFGH" + string(sufijos[i%len(sufijos)]) + string(sufijos[(i/len(sufijos))%len(sufijos)])
+		c, err := dominio.NuevoCodigoRespaldoPlano(valor)
+		if err != nil {
+			return nil, err
+		}
+		codigos = append(codigos, c)
+	}
+	return codigos, nil
+}
+
+// factorConfirmadoDePrueba construye, vía dominio.ReconstituirFactorMFA, un
+// FactorMFA ya confirmado con secretoCifradoDePrueba y los códigos de
+// respaldo indicados (puede ir vacío).
+func factorConfirmadoDePrueba(t *testing.T, idFactor dominio.IDFactorMFA, idUsuario dominio.IDUsuario, codigosRespaldo []dominio.CodigoRespaldoMFA) *dominio.FactorMFA {
+	t.Helper()
+	confirmadoEn := ahoraDePrueba()
+	return dominio.ReconstituirFactorMFA(
+		idFactor, idUsuario, dominio.TipoFactorTOTP, secretoCifradoDePrueba(t),
+		true, ahoraDePrueba(), &confirmadoEn, codigosRespaldo,
+	)
 }

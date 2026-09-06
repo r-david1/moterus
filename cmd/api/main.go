@@ -10,10 +10,12 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -269,9 +271,23 @@ func montarAcceso(
 	autenticadorACL := accesoidentidad.NuevoAutenticadorIdentidad(autenticadorIdentidad)
 	consultorEstadoSujeto := accesoidentidad.NuevoConsultorEstadoSujeto(consultorIdentidad)
 
+	// emisorStepUp: el adaptador real (JWT propio de Acceso, TTL de 5
+	// minutos, ADR 0038/docs/design/otp-mfa.md §2.4, reutilizando el
+	// Llavero ya construido arriba) todavía no existe en
+	// internal/acceso/adaptadores/jwt — es trabajo de infraestructura
+	// pendiente, fuera del alcance de este cambio (que solo extiende la
+	// capa de aplicación de Identidad/Acceso). Se usa aquí un placeholder
+	// que falla explícitamente en vez de fingir emitir un token válido: el
+	// login de un usuario que NO requiere segundo factor sigue funcionando
+	// de punta a punta sin tocar este puerto; solo el paso "emitir el
+	// token de step-up cuando RequiereSegundoFactor==true" queda roto
+	// hasta que el adaptador real se implemente.
+	emisorStepUp := emisorTokenStepUpPendiente{}
+
 	iniciador := accesoaplicacion.NuevoIniciarSesionCasoDeUso(
 		autenticadorACL, sesiones, generadorRefrescos, firmador, listaRevocacion,
 		registroAuditoria, publicadorEventos, relojReal, generadorIDs, uow, politica, emisor, audiencia,
+		emisorStepUp,
 	)
 	renovador := accesoaplicacion.NuevoRenovarSesionCasoDeUso(
 		evaluadorConfianzaAcceso, sesiones, generadorRefrescos, firmador, consultorEstadoSujeto, listaRevocacion,
@@ -295,6 +311,26 @@ func montarAcceso(
 		llavero.KIDActivo(), estadoRedis, estadoConfianza)
 
 	return validador, manejador
+}
+
+// emisorTokenStepUpPendiente es un placeholder TEMPORAL de
+// puertos.EmisorTokenStepUp (ADR 0038, docs/design/otp-mfa.md §2.4). El
+// adaptador real (JWT propio de Acceso firmado con el mismo Llavero de
+// FirmadorTokensAcceso, TTL de 5 minutos, `typ` de cabecera distintivo) es
+// trabajo de infraestructura pendiente en
+// internal/acceso/adaptadores/jwt, fuera del alcance de la capa de
+// aplicación. Emitir/Validar fallan explícitamente en vez de fingir emitir
+// un token válido: solo afecta al login de un usuario para el que
+// Identidad exige un segundo factor (RequiereSegundoFactor==true); el
+// resto del flujo de autenticación no toca este puerto.
+type emisorTokenStepUpPendiente struct{}
+
+func (emisorTokenStepUpPendiente) Emitir(_ context.Context, _ string, _ string, _ time.Time) (accesopuertos.TokenStepUp, error) {
+	return accesopuertos.TokenStepUp{}, fmt.Errorf("EmisorTokenStepUp: adaptador real pendiente de implementar (ADR 0038)")
+}
+
+func (emisorTokenStepUpPendiente) Validar(_ context.Context, _ string) (accesopuertos.ClaimsStepUp, error) {
+	return accesopuertos.ClaimsStepUp{}, fmt.Errorf("EmisorTokenStepUp: adaptador real pendiente de implementar (ADR 0038)")
 }
 
 // montarTenencia ensambla el bounded context Tenencia completo

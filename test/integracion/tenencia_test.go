@@ -44,6 +44,7 @@ import (
 	accesoaplicacion "github.com/r-david1/moterus/internal/acceso/aplicacion"
 	accesodominio "github.com/r-david1/moterus/internal/acceso/dominio"
 	accesopuertos "github.com/r-david1/moterus/internal/acceso/puertos"
+	accesomocks "github.com/r-david1/moterus/internal/acceso/puertos/mocks"
 
 	"github.com/r-david1/moterus/internal/identidad/adaptadores/auditoria"
 	identidadconfianza "github.com/r-david1/moterus/internal/identidad/adaptadores/confianza"
@@ -191,10 +192,14 @@ func nuevoServidorTenencia(t *testing.T, pool *pgxpool.Pool) (*fiber.App, *captu
 	autenticadorACL := accesoidentidad.NuevoAutenticadorIdentidad(autenticadorIdentidad)
 	consultorEstadoSujeto := accesoidentidad.NuevoConsultorEstadoSujeto(consultorIdentidad)
 
+	// emisorStepUp: ver el mismo comentario en acceso_test.go — adaptador
+	// real pendiente (ADR 0038), fuera del alcance de este cambio; ningún
+	// test de este archivo ejercita step-up/MFA.
 	iniciador := accesoaplicacion.NuevoIniciarSesionCasoDeUso(
 		autenticadorACL, sesiones, generadorRefrescos, firmador, listaRevocacion,
 		registroAuditoriaAcceso, publicadorEventosAcceso, relojReal, generadorIDsAcceso, uowAcceso, politicaSesion,
 		"https://acceso.test.moterus.local", "moterus-test",
+		&accesomocks.EmisorTokenStepUp{},
 	)
 	renovador := accesoaplicacion.NuevoRenovarSesionCasoDeUso(
 		evaluadorConfianzaAcceso, sesiones, generadorRefrescos, firmador, consultorEstadoSujeto, listaRevocacion,

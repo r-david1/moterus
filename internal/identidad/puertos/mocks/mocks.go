@@ -451,9 +451,17 @@ func (m *GeneradorSecretoTOTP) GenerarCodigosRespaldo(n int) ([]dominio.CodigoRe
 	if m.FnGenerarCodigosRespaldo != nil {
 		return m.FnGenerarCodigosRespaldo(n)
 	}
+	// Alfabeto de dos caracteres seguido de dos dígitos, ambos tomados del
+	// mismo catálogo cerrado que dominio.CodigoRespaldoPlano exige
+	// ("ABCDEFGHJKMNPQRSTUVWXYZ23456789", sin 0/1/I/L/O) — un valor por
+	// defecto que use dígitos fuera de ese alfabeto (p. ej. "0"/"1") hace
+	// que NuevoCodigoRespaldoPlano falle en cualquier test que no
+	// configure FnGenerarCodigosRespaldo.
+	const alfabeto = "23456789"
 	codigos := make([]dominio.CodigoRespaldoPlano, 0, n)
 	for i := 0; i < n; i++ {
-		c, err := dominio.NuevoCodigoRespaldoPlano(fmt.Sprintf("ABCDEFGH%02d", i))
+		sufijo := string(alfabeto[i%len(alfabeto)]) + string(alfabeto[(i/len(alfabeto))%len(alfabeto)])
+		c, err := dominio.NuevoCodigoRespaldoPlano(fmt.Sprintf("ABCDEFGH%s", sufijo))
 		if err != nil {
 			return nil, err
 		}

@@ -34,6 +34,7 @@ import (
 	accesoaplicacion "github.com/r-david1/moterus/internal/acceso/aplicacion"
 	accesodominio "github.com/r-david1/moterus/internal/acceso/dominio"
 	accesopuertos "github.com/r-david1/moterus/internal/acceso/puertos"
+	accesomocks "github.com/r-david1/moterus/internal/acceso/puertos/mocks"
 
 	"github.com/r-david1/moterus/internal/identidad/adaptadores/auditoria"
 	identidadconfianza "github.com/r-david1/moterus/internal/identidad/adaptadores/confianza"
@@ -137,10 +138,16 @@ func nuevoServidorAcceso(t *testing.T, pool *pgxpool.Pool) *fiber.App {
 	autenticadorACL := accesoidentidad.NuevoAutenticadorIdentidad(autenticadorIdentidad)
 	consultorEstadoSujeto := accesoidentidad.NuevoConsultorEstadoSujeto(consultorIdentidad)
 
+	// emisorStepUp: el adaptador real de EmisorTokenStepUp (ADR 0038) todavía
+	// no existe (trabajo de infraestructura pendiente, fuera del alcance de
+	// este cambio). Ninguno de los tests de este archivo ejercita el flujo de
+	// step-up/MFA todavía, así que el mock por defecto (que nunca falla)
+	// basta para no romper el resto de la batería.
 	iniciador := accesoaplicacion.NuevoIniciarSesionCasoDeUso(
 		autenticadorACL, sesiones, generadorRefrescos, firmador, listaRevocacion,
 		registroAuditoria, publicadorEventos, relojReal, generadorIDs, uow, politica,
 		"https://acceso.test.moterus.local", "moterus-test",
+		&accesomocks.EmisorTokenStepUp{},
 	)
 	renovador := accesoaplicacion.NuevoRenovarSesionCasoDeUso(
 		evaluadorConfianzaAcceso, sesiones, generadorRefrescos, firmador, consultorEstadoSujeto, listaRevocacion,

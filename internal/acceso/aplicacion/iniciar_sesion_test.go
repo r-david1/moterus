@@ -29,6 +29,7 @@ type mocksIniciarSesion struct {
 	ids             *mocks.GeneradorIDs
 	uow             *mocks.UnidadDeTrabajo
 	politica        dominio.PoliticaSesion
+	emisorStepUp    *mocks.EmisorTokenStepUp
 }
 
 func nuevosMocksIniciarSesion(t *testing.T) *mocksIniciarSesion {
@@ -53,8 +54,9 @@ func nuevosMocksIniciarSesion(t *testing.T) *mocksIniciarSesion {
 		ids: &mocks.GeneradorIDs{
 			FnNuevoIDSesion: func() (dominio.IDSesion, error) { return idSesionDePrueba(t, idSesionValido1), nil },
 		},
-		uow:      &mocks.UnidadDeTrabajo{},
-		politica: politicaDePrueba(t),
+		uow:          &mocks.UnidadDeTrabajo{},
+		politica:     politicaDePrueba(t),
+		emisorStepUp: &mocks.EmisorTokenStepUp{},
 	}
 }
 
@@ -62,6 +64,7 @@ func (m *mocksIniciarSesion) casoDeUso() *aplicacion.IniciarSesionCasoDeUso {
 	return aplicacion.NuevoIniciarSesionCasoDeUso(
 		m.autenticador, m.sesiones, m.refrescos, m.firmador, m.listaRevocacion,
 		m.auditoria, m.eventos, m.reloj, m.ids, m.uow, m.politica, emisorDePrueba, audienciaDePrueba,
+		m.emisorStepUp,
 	)
 }
 
@@ -182,6 +185,18 @@ func TestIniciarSesionCasoDeUso_SegundoFactorRequerido(t *testing.T) {
 	}
 	if errStepUp.MotivoStepUp != "mfa_habilitado" {
 		t.Errorf("MotivoStepUp = %q, esperado mfa_habilitado", errStepUp.MotivoStepUp)
+	}
+	if errStepUp.TokenStepUp == "" {
+		t.Error("TokenStepUp no debe estar vacío cuando se requiere segundo factor (ADR 0038)")
+	}
+	if len(m.emisorStepUp.LlamadasEmitir) != 1 {
+		t.Fatalf("se esperaba 1 llamada a EmisorTokenStepUp.Emitir, hubo %d", len(m.emisorStepUp.LlamadasEmitir))
+	}
+	if m.emisorStepUp.LlamadasEmitir[0].IDUsuario != idUsuarioValido1 {
+		t.Errorf("Emitir() IDUsuario = %q, esperado %q", m.emisorStepUp.LlamadasEmitir[0].IDUsuario, idUsuarioValido1)
+	}
+	if m.emisorStepUp.LlamadasEmitir[0].MotivoStepUp != "mfa_habilitado" {
+		t.Errorf("Emitir() MotivoStepUp = %q, esperado mfa_habilitado", m.emisorStepUp.LlamadasEmitir[0].MotivoStepUp)
 	}
 	// INV-ACC-03: no se emite sesión ni se persiste nada.
 	if len(m.sesiones.LlamadasGuardar) != 0 {

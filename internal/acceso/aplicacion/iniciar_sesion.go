@@ -27,6 +27,7 @@ type IniciarSesionCasoDeUso struct {
 	politica        dominio.PoliticaSesion
 	emisor          string
 	audiencia       string
+	emisorStepUp    puertos.EmisorTokenStepUp
 }
 
 var _ puertos.IniciadorDeSesion = (*IniciarSesionCasoDeUso)(nil)
@@ -50,6 +51,7 @@ func NuevoIniciarSesionCasoDeUso(
 	politica dominio.PoliticaSesion,
 	emisor string,
 	audiencia string,
+	emisorStepUp puertos.EmisorTokenStepUp,
 ) *IniciarSesionCasoDeUso {
 	return &IniciarSesionCasoDeUso{
 		autenticador:    autenticador,
@@ -65,6 +67,7 @@ func NuevoIniciarSesionCasoDeUso(
 		politica:        politica,
 		emisor:          emisor,
 		audiencia:       audiencia,
+		emisorStepUp:    emisorStepUp,
 	}
 }
 
@@ -94,23 +97,62 @@ func (c *IniciarSesionCasoDeUso) Iniciar(ctx context.Context, cmd puertos.Comand
 	}
 
 	// INV-ACC-03: si Identidad exige segundo factor, no se emite sesión ni
-	// token de acceso alguno. Tampoco se audita: Identidad ya emitió
-	// usuario.step_up_requerido.
+	// token de acceso alguno. Tampoco se audita aquí: Identidad ya emitió
+	// usuario.step_up_requerido. Antes de devolver el error, se emite el
+	// token de step-up (ADR 0038, §3.5 del diseño otp-mfa.md) para que el
+	// cliente pueda completar el login en
+	// POST /acceso/sesiones/segundo-factor (CompletarSegundoFactorCasoDeUso)
+	// sin tener que volver a presentar la contraseña.
 	if sujeto.RequiereSegundoFactor {
-		return puertos.ResultadoSesion{}, &dominio.ErrSegundoFactorRequerido{MotivoStepUp: sujeto.MotivoStepUp}
+		tokenStepUp, err := c.emisorStepUp.Emitir(ctx, sujeto.IDUsuario, sujeto.MotivoStepUp, c.reloj.Ahora())
+		if err != nil {
+			return puertos.ResultadoSesion{}, err
+		}
+		return puertos.ResultadoSesion{}, &dominio.ErrSegundoFactorRequerido{
+			MotivoStepUp: sujeto.MotivoStepUp,
+			TokenStepUp:  tokenStepUp.Compacto(),
+		}
 	}
 
 	usuarioID, err := dominio.IDUsuarioDesde(sujeto.IDUsuario)
 	if err != nil {
 		return puertos.ResultadoSesion{}, err
 	}
+
+	return c.emitirSesionCompleta(ctx, usuarioID, cmd.Origen, metodosAutenticacionSoloContrasena)
+}
+
+// metodosAutenticacionSoloContrasena/metodosAutenticacionConSegundoFactor
+// son los dos únicos valores que puede tomar el claim `amr` (RFC 8176) que
+// este contexto emite (§3.5/§3.6 del diseño otp-mfa.md): ["pwd"] cuando el
+// login se completó sin exigir segundo factor, ["pwd","otp"] cuando
+// CompletarSegundoFactorCasoDeUso acaba de verificar el código OTP. Se
+// pasan explícitamente a emitirSesionCompleta en lugar de dejar que
+// Sesion.ReclamacionesParaToken decida (ese método sigue fijo en ["pwd"],
+// dominio.metodosAutenticacionFase1, sin parámetro para variarlo): construir
+// las reclamaciones aquí, vía dominio.NuevasReclamacionesAcceso (que si
+// admite un slice de métodos), es la única forma de lograrlo sin tocar
+// acceso/dominio (cerrado para este cambio).
+var (
+	metodosAutenticacionSoloContrasena   = []string{"pwd"}
+	metodosAutenticacionConSegundoFactor = []string{"pwd", "otp"}
+)
+
+// emitirSesionCompleta es la lógica de emisión de sesión compartida entre
+// IniciarSesion (cuando no hace falta segundo factor) y
+// CompletarSegundoFactor (tras verificar el código OTP): construye el
+// agregado Sesion, su primer refresco, persiste + audita en la misma
+// UnidadDeTrabajo (ADR 0005), firma el token de acceso DESPUÉS del commit
+// (INV-ACC-24) con el claim `amr` recibido, y aplica el límite de sesiones
+// concurrentes (INV-ACC-22) fuera de la transacción.
+func (c *IniciarSesionCasoDeUso) emitirSesionCompleta(ctx context.Context, usuarioID dominio.IDUsuario, origen dominio.OrigenSolicitud, amr []string) (puertos.ResultadoSesion, error) {
 	idSesion, err := c.ids.NuevoIDSesion()
 	if err != nil {
 		return puertos.ResultadoSesion{}, err
 	}
 
 	ahora := c.reloj.Ahora()
-	sesion, err := dominio.IniciarSesion(idSesion, usuarioID, cmd.Origen, ahora, c.politica)
+	sesion, err := dominio.IniciarSesion(idSesion, usuarioID, origen, ahora, c.politica)
 	if err != nil {
 		return puertos.ResultadoSesion{}, err
 	}
@@ -129,7 +171,7 @@ func (c *IniciarSesionCasoDeUso) Iniciar(ctx context.Context, cmd puertos.Comand
 			return err
 		}
 		for _, e := range eventosPendientes {
-			if err := c.auditoria.Registrar(ctx, e, cmd.Origen); err != nil {
+			if err := c.auditoria.Registrar(ctx, e, origen); err != nil {
 				return err
 			}
 		}
@@ -145,7 +187,10 @@ func (c *IniciarSesionCasoDeUso) Iniciar(ctx context.Context, cmd puertos.Comand
 	if err != nil {
 		return puertos.ResultadoSesion{}, err
 	}
-	reclamaciones, err := sesion.ReclamacionesParaToken(jti, c.emisor, c.audiencia, ahora, c.politica)
+	reclamaciones, err := dominio.NuevasReclamacionesAcceso(
+		c.emisor, usuarioID, c.audiencia, sesion.ID(), jti, amr,
+		sesion.CreadaEn(), ahora, ahora.Add(c.politica.VidaTokenAcceso()), 1,
+	)
 	if err != nil {
 		return puertos.ResultadoSesion{}, err
 	}
@@ -159,7 +204,7 @@ func (c *IniciarSesionCasoDeUso) Iniciar(ctx context.Context, cmd puertos.Comand
 			"error", errPub, "sesion_id", sesion.ID().String())
 	}
 
-	c.aplicarLimiteSesiones(ctx, usuarioID, cmd.Origen)
+	c.aplicarLimiteSesiones(ctx, usuarioID, origen)
 
 	refrescoVigente, _ := sesion.RefrescoVigente()
 	return puertos.ResultadoSesion{
