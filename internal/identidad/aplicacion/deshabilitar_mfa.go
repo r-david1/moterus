@@ -112,9 +112,9 @@ func (c *DeshabilitarMFACasoDeUso) Deshabilitar(ctx context.Context, cmd puertos
 	// ese cambio como cualquier otra mutación, sin necesitar DELETE ni un
 	// método nuevo del puerto. Es lo que hace que un ContarConfirmadosDeUsuario
 	// posterior ya no cuente este factor, permitiendo un HabilitarMFA nuevo.
-	// La migración que implemente RepositorioFactoresMFA (fase de
-	// infraestructura, todavía no escrita) necesita una columna "activo"
-	// junto a "confirmado" para que esto funcione en Postgres.
+	// La migración 000015 ya trae la columna "activo" junto a "confirmado"
+	// exactamente para esto, y RepositorioFactoresMFA (adaptadores/postgres)
+	// ya filtra por ambas.
 	factorElegido.Deshabilitar(ahora)
 	usuario.DeshabilitarMFA(ahora)
 

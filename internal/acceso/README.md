@@ -31,10 +31,13 @@ Acceso **no** hace (y por diseño no debe hacerse aquí):
   0005), consumido vía el puerto `RegistroAuditoria`.
 
 Acceso **es más consumidor que proveedor de puertos de otros contextos**:
-llama a `identidad/puertos.AutenticadorDeCredenciales` y
-`identidad/puertos.ConsultorDeUsuarios` a través de su propio ACL
-(`internal/acceso/adaptadores/identidad/`, el único paquete de Acceso
-autorizado a importar algo de Identidad — INV-ACC-19). Lo que Acceso sí
+llama a `identidad/puertos.AutenticadorDeCredenciales`,
+`identidad/puertos.ConsultorDeUsuarios` y, desde el cierre de la
+extensión OTP/MFA, `identidad/puertos.VerificadorOTP` (para
+`POST /acceso/sesiones/segundo-factor` — ver más abajo), todos a través de
+su propio ACL (`internal/acceso/adaptadores/identidad/`, el único
+paquete de Acceso autorizado a importar algo de Identidad — INV-ACC-19).
+Lo que Acceso sí
 **expone** a otros contextos es `puertos.ValidadorDeAccesos`: es el puerto
 que cualquier middleware HTTP del sistema consume para autenticar una
 petición Bearer. Hoy tiene un consumidor real: el middleware de
@@ -166,7 +169,7 @@ sin leer el diseño completo:
   revocar (una sesión ajena da **404**, nunca 403 — un 403 confirmaría que
   ese ID existe).
 
-## Los 7 endpoints
+## Los 8 endpoints
 
 Prefijo `/acceso`, con la única excepción de JWKS (RFC 8615 fija ese
 prefijo en la raíz). Los DTOs de request/response de abajo son los campos
@@ -213,9 +216,79 @@ Errores posibles:
 | Status | Causa | Error de dominio |
 |---|---|---|
 | `401` | Correo/contraseña incorrectos (traducido en el ACL desde `identidad/dominio.ErrCredencialesInvalidas`) | `ErrCredencialesRechazadas` |
-| `401` | Identidad indicó que se requiere segundo factor — **no se emite sesión** | `ErrSegundoFactorRequerido` (`type` de problema distinguible `step-up-requerido`, con `motivo_step_up` en el cuerpo) |
+| `401` | Identidad indicó que se requiere segundo factor — **no se emite sesión** (INV-ACC-03) | `ErrSegundoFactorRequerido` (`type` de problema distinguible `step-up-requerido`; el cuerpo trae `motivo_step_up` y, desde el cierre de OTP/MFA, `token_step_up` — ver el formato exacto justo abajo) |
 | `403` | Cuenta no operativa (correo no verificado / suspendida / bloqueada) | `ErrCuentaNoOperativa` (con `Motivo`) |
 | `429` | Confianza bloqueó el intento **dentro de Identidad** (propagado con el mismo `ReintentarEn`) | `ErrAccesoDenegadoPorConfianza` (`Retry-After`) |
+
+**Formato exacto del `401` de step-up — no son campos JSON de primer
+nivel.** `huma.ErrorModel` (RFC 9457) no tiene un campo propio para
+`motivo_step_up`/`token_step_up`, así que ambos viajan como
+`huma.ErrorDetail` dentro de `errors[]`, con el prefijo literal
+`"clave: valor"` en `message` (`errores_http.go`,
+`detallesSegundoFactor`):
+
+```json
+{
+  "status": 401,
+  "title": "se requiere un segundo factor",
+  "type": "https://moterus.dev/problemas/step-up-requerido",
+  "detail": "la autenticación es válida pero exige un paso adicional antes de emitir una sesión",
+  "errors": [
+    { "message": "motivo_step_up: mfa_habilitado" },
+    { "message": "token_step_up: eyJhbGciOiJFZERTQSJ9...." }
+  ]
+}
+```
+
+Un cliente que espere `body.token_step_up` como campo de primer nivel (el
+criterio "obvio" para RFC 9457) va a romperse en la integración: hay que
+iterar `errors[]` y separar cada `message` por el primer `": "`. Ver
+`errorSegundoFactorRespuesta`/`valor(clave)` en
+`test/integracion/acceso_test.go` para una implementación de referencia
+ya probada contra el servidor real. Ver también la sección dedicada al
+token de step-up más abajo.
+
+### `POST /acceso/sesiones/segundo-factor` — Completar el login con el segundo factor (MFA)
+
+Paso 2 del login cuando `POST /acceso/sesiones` devolvió `token_step_up`
+(§3.6 de `docs/design/otp-mfa.md`). **Sin Bearer**: la credencial de este
+endpoint es el propio `token_step_up` del cuerpo — nunca un token de
+acceso normal, que el validador de step-up rechaza explícitamente (ver
+"Token de step-up" más abajo, con la verificación en vivo de ambos
+sentidos del rechazo). Si el código es válido, emite la sesión completa
+con exactamente la misma lógica que el login normal
+(`emitirSesionCompleta`, compartida), con `amr: ["pwd", "otp"]` en el JWT
+resultante — **verificado en vivo decodificando el token**, no solo
+asumido: es el único punto del sistema que emite ese claim con dos
+elementos.
+
+`aud` específico: ninguno. Rate limit especial: **sí** — ADR 0018 /
+`docs/design/otp-mfa.md` §7, `EvaluadorConfianza` con
+`Accion="verificar_otp"`, clave por `IDUsuario` (no por IP: es un ataque
+dirigido a una cuenta concreta). Umbrales: 5/15min por usuario, 20/15min
+por IP — agresivo a propósito, es un oráculo de fuerza bruta clásico
+sobre un código de 6 dígitos con ventanas de validez de 30s.
+
+Request:
+
+```json
+{ "token_step_up": "eyJhbGciOiJFZERTQSJ9....", "codigo": "123456" }
+```
+
+Response `201 Created`: mismo `resultadoSesionRespuesta` que el login
+normal (ver arriba).
+
+Errores posibles:
+
+| Status | Causa | Nota |
+|---|---|---|
+| `401` | `token_step_up` inválido, expirado o de un `typ` distinto del esperado, **o** el código OTP/de respaldo es incorrecto | **Un único error genérico en los tres casos** (INV-MFA-08): no se le da a quien prueba fuerza bruta información de diagnóstico sobre cuál de las tres cosas falló |
+| `429` | Confianza denegó el intento | `ErrAccesoDenegadoPorConfianza` (`Retry-After`) |
+
+El código aceptado es tanto un TOTP vigente como cualquiera de los 10
+códigos de respaldo no usados del usuario — verificado por Identidad vía
+`puertos.VerificadorOTP`, consumido por el mismo ACL de Acceso hacia
+Identidad que ya usa `IniciarSesion` (`internal/acceso/adaptadores/identidad/`).
 
 ### `POST /acceso/sesiones/renovaciones` — Renovar la sesión (rotar el refresco)
 
@@ -369,7 +442,7 @@ no debería intentar rama-ificar el comportamiento a partir del mensaje.
 | `exp`, `iat`, `nbf` | según `PoliticaSesion` (10 min de vida, tolerancia de reloj 60 s) | `nbf = iat` |
 | `jti` | UUIDv4 | correlación forense y replay detection; no ordenable a propósito |
 | `sid` | UUIDv7, el `IDSesion` | **clave de revocación** y correlación con la tabla `sesiones` |
-| `amr` | `["pwd"]` hoy (fase 2: `["pwd","otp"]`) | RFC 8176 |
+| `amr` | `["pwd"]` (login normal, sin segundo factor) **o** `["pwd","otp"]` (tras completar `POST /acceso/sesiones/segundo-factor`) | RFC 8176 — verificado en vivo decodificando ambas variantes del JWT emitido |
 | `auth_time` | instante de la autenticación original de la sesión | políticas de reautenticación |
 | `ver` | `1` | versión del formato de claims |
 
@@ -378,6 +451,53 @@ no debería intentar rama-ificar el comportamiento a partir del mensaje.
 necesita saber el rol o la organización del usuario, ese dato **no está en
 el JWT** — hoy no hay ningún contexto que lo resuelva (Tenencia no existe
 todavía); no lo infieras del token.
+
+## Token de step-up (segundo factor pendiente) — ADR 0038
+
+Cuando `POST /acceso/sesiones` responde `401` con `type` de problema
+`step-up-requerido`, el cuerpo trae un `token_step_up` (ver el formato
+exacto en la sección del endpoint más arriba): un JWT **propio** de
+Acceso, firmado con la misma llave de firma de un token de acceso normal
+(ADR 0020, mismo `Llavero` — no hace falta una segunda llave ni un
+segundo JWKS), que representa "la contraseña es correcta, falta el
+segundo factor". **No es una sesión**: no tiene fila en `sesiones`, no
+tiene refresco, y nunca puede usarse donde se espera un token de acceso
+normal, ni viceversa.
+
+| Propiedad | Valor |
+|---|---|
+| TTL | **5 minutos**, sin refresco posible (INV-MFA-04) — la mitad de la vida del token de acceso normal (10 min, ADR 0019); expirado, no hay más camino que volver a loguear con usuario+contraseña desde cero |
+| `typ` de cabecera | `step-up+jwt` — **nunca** `at+jwt` |
+| Claims | `sub` (usuario) y `motivo_step_up` (`mfa_habilitado` \| `confianza_baja`, el mismo valor que Identidad ya calculó) — sin claims de autorización ni PII |
+| Dónde se presenta | Campo `token_step_up` del cuerpo de `POST /acceso/sesiones/segundo-factor` — **nunca** como cabecera `Authorization: Bearer` |
+
+**Por qué un `typ` de cabecera distinto y no un claim (`step_up_pendiente:
+true`) sobre el token de acceso normal:** cada validador del sistema
+(Acceso, Identidad, Tenencia) ya exige `typ == "at+jwt"` como parte de
+INV-ACC-14 (defensa contra *algorithm confusion*). Un token de step-up
+con un `typ` distinto queda automáticamente rechazado por cualquier
+endpoint que no sea explícitamente `POST /acceso/sesiones/segundo-factor`,
+sin necesitar ningún código nuevo en esos validadores — la alternativa
+del claim habría obligado a todos los validadores existentes a aprender a
+revisarlo, exactamente el tipo de responsabilidad repartida que ADR 0038
+descarta.
+
+**Verificación en vivo de los dos sentidos de este rechazo**
+(servidor real, Postgres+Redis reales, con `curl`, no solo tests
+automatizados):
+
+1. Presentar el `token_step_up` como `Authorization: Bearer` contra un
+   endpoint protegido normal (`GET /acceso/sesiones`) → `401`. El
+   validador de tokens de acceso normales lo rechaza por su `typ`
+   (`step-up+jwt` no es `at+jwt`).
+2. Presentar un token de acceso normal ya emitido y válido como
+   `token_step_up` en `POST /acceso/sesiones/segundo-factor` → `401`. El
+   validador de step-up lo rechaza por el mismo motivo, en la dirección
+   opuesta (`at+jwt` no es `step-up+jwt`).
+
+Ninguno de los dos rechazos necesitó ningún caso especial en el código:
+es consecuencia directa de que cada validador exige su propio `typ`
+exacto — el mismo mecanismo, aplicado dos veces.
 
 ## Auditoría
 
@@ -389,6 +509,20 @@ en lista de revocación) — un `401` por token simplemente expirado es el
 evento más frecuente del sistema y no se audita (INV-ACC-17). Catálogo
 completo de las 6 acciones nuevas: `docs/catalogos/acciones-auditoria.md`
 (sección "Contexto Acceso").
+
+**`CompletarSegundoFactor` no agrega ninguna acción de auditoría nueva a
+este contexto**: reutiliza `emitirSesionCompleta`, así que el evento que
+persiste al completar el segundo factor es el mismo `sesion.iniciada` que
+emite un login normal — no hay un `sesion.iniciada_con_otp` distinto. Lo
+único que distingue ambos casos es el claim `amr` **dentro del JWT**, no
+la fila de auditoría. Verificado en vivo con la cadena de auditoría
+completa de un flujo E2E (`verificar_cadena_auditoria()`, 0
+discrepancias): `usuario.mfa_habilitado`, `usuario.mfa_confirmado`
+(ambos en Identidad, ver `internal/identidad/README.md`),
+`usuario.step_up_requerido` (emitido por Identidad en el login que exige
+el segundo factor, catálogo previo a esta extensión) y `sesion.iniciada`
+**dos veces** — una del primer login sin MFA activo, otra al completar el
+segundo factor.
 
 ## Gotcha real de implementación (documentado en la migración, no un pendiente)
 
@@ -411,5 +545,13 @@ migración y de `Guardar` en
 - ADR 0009 (frontera Identidad/Acceso): `docs/adr/0009-frontera-identidad-acceso.md`
 - ADR 0019 (mecanismo de sesión): `docs/adr/0019-mecanismo-sesion-jwt-refresco-rotatorio.md`
 - ADR 0020 (algoritmo de firma y rotación de llaves): `docs/adr/0020-algoritmo-firma-jwt-rotacion-llaves.md`
-- README de Identidad (contexto consumidor de `ValidadorDeAccesos`): `internal/identidad/README.md`
+- README de Identidad (contexto consumidor de `ValidadorDeAccesos`, y
+  proveedor del autoservicio de MFA que este contexto completa):
+  `internal/identidad/README.md`
+- Diseño de la extensión OTP/MFA (extiende Identidad y Acceso, no un
+  contexto nuevo): `docs/design/otp-mfa.md`
+- ADR 0037 (MFA del MVP limitado a TOTP): `docs/adr/0037-mfa-mvp-limitado-a-totp.md`
+- ADR 0038 (token de step-up, este contexto): `docs/adr/0038-token-step-up-jwt-propio-ttl-corto.md`
+- ADR 0039 (deshabilitar MFA exige código propio): `docs/adr/0039-deshabilitar-mfa-exige-codigo-propio.md`
+- ADR 0040 (códigos de respaldo generados en la confirmación): `docs/adr/0040-codigos-respaldo-en-confirmacion.md`
 - Índice completo de ADRs: `docs/adr/README.md`

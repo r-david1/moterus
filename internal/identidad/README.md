@@ -43,6 +43,8 @@ Identidad **no** hace (y por diseño no debe hacerse aquí):
 | `puertos.RegistradorDeUsuarios` | Alta de usuario | `aplicacion.RegistrarUsuarioCasoDeUso` |
 | `puertos.AutenticadorDeCredenciales` | Verificar correo+contraseña (sin emitir sesión) | `aplicacion.AutenticarUsuarioCasoDeUso` |
 | `puertos.ConsultorDeUsuarios` | Resolver datos mínimos de un usuario por ID | `aplicacion.ObtenerUsuarioCasoDeUso` |
+| `puertos.GestorDeMFA` | Autoservicio de MFA del propio sujeto (habilitar/confirmar/deshabilitar un factor TOTP) | `aplicacion.Habilitar/Confirmar/DeshabilitarMFACasoDeUso`, compuestos en `cmd/api/main.go` (`gestorMFACompuesto`, porque `GestorDeMFA` agrupa tres operaciones y ningún struct de aplicación las implementa por sí solo) |
+| `puertos.VerificadorOTP` | Verificar un código OTP (TOTP o de respaldo) contra el sujeto — el camino caliente del step-up | `aplicacion.VerificarOTPCasoDeUso` |
 
 Ver `internal/identidad/puertos/entrada.go` para las firmas exactas. Desde
 ADR 0019/0020, el contexto **Acceso** ya es el consumidor de
@@ -51,6 +53,11 @@ ADR 0019/0020, el contexto **Acceso** ya es el consumidor de
 `RenovarSesion`, para revalidar en cada renovación que la cuenta siga
 `activa` — es el mecanismo por el que Acceso se entera de una suspensión
 sin depender de un broker de eventos). Ver `internal/acceso/README.md`.
+Desde el cierre de la extensión OTP/MFA (`docs/design/otp-mfa.md`, ADR
+0037-0040), **Acceso** es también el único consumidor de
+`VerificadorOTP`, vía el mismo ACL, para completar
+`POST /acceso/sesiones/segundo-factor` — ver la sección de MFA más abajo
+y `internal/acceso/README.md`.
 
 ## Cómo levantarlo en local
 
@@ -73,6 +80,24 @@ Valores de desarrollo (`Makefile`):
 DATABASE_URL             = postgres://auth_service:auth_service_dev_password@localhost:5432/auth_service?sslmode=disable
 DATABASE_URL_APLICACION  = postgres://rol_login_identidad:identidad_app_dev_password@localhost:5432/auth_service?sslmode=disable
 ```
+
+### Cifrado del secreto TOTP (ADR 0038, `docs/design/otp-mfa.md` §2.2)
+
+`IDENTIDAD_LLAVE_CIFRADO_MFA` (env, AES-256-GCM, 32 bytes en base64) es la
+llave con la que `identidad/adaptadores/cripto.CifradorSecretosAESGCM`
+cifra/descifra en reposo el secreto TOTP de cada `FactorMFA` —
+**cifrado simétrico reversible, no un hash** (a diferencia de
+`HasherContrasenas`/Argon2id): el servidor necesita poder leer el secreto
+en claro para computar el código esperado en cada verificación
+(INV-MFA-02). Mismo criterio de gestión que `ACCESO_LLAVE_FIRMA` (ADR
+0020, ver `internal/acceso/README.md`): en `APP_ENV=production`, su
+ausencia es fail-closed duro (`log.Fatalf`, el proceso no arranca); fuera
+de producción, se genera una llave AES-256 efímera en memoria con un
+`WARN` explícito. **Consecuencia concreta de no fijarla en desarrollo
+persistente**: un usuario que confirmó MFA antes de un reinicio del
+proceso queda con un secreto indescifrable tras el reinicio, y necesita
+deshabilitar y volver a habilitar MFA desde cero (`construirCifradorSecretosMFA`
+en `cmd/api/main.go`).
 
 ### Rate limiting y captcha (ADR 0018)
 
@@ -130,13 +155,15 @@ interactiva quedan disponibles en:
 ## Los 3 endpoints (MVP)
 
 > **Aviso de alcance:** este README documenta en detalle los 3 endpoints
-> del MVP original. `rutas.go` registra hoy **5** operaciones: además de
-> las tres de abajo, existen `POST /identidad/verificaciones-correo` y
+> del MVP original, más los 3 endpoints de autoservicio de MFA (sección
+> dedicada más abajo, agregada en el cierre de la extensión
+> `docs/design/otp-mfa.md`). `rutas.go` registra hoy **8** operaciones en
+> total: las 6 ya nombradas más `POST /identidad/verificaciones-correo` y
 > `POST /identidad/verificaciones-correo/reenvios` (backlog §3.4/3.5 del
-> diseño, ya implementados). Esos dos quedan fuera del alcance de este
-> cierre de documentación — no se describen aquí con el mismo detalle
-> todavía; ver `rutas.go` y `internal/identidad/adaptadores/http/dtos.go`
-> mientras tanto.
+> diseño de Identidad, ya implementados). Esos dos últimos siguen fuera
+> del alcance de detalle de este README — no se describen aquí con el
+> mismo nivel todavía; ver `rutas.go` y
+> `internal/identidad/adaptadores/http/dtos.go` mientras tanto.
 
 De los tres, **dos siguen públicos, sin token** (`POST /identidad/usuarios`
 y `POST /identidad/autenticaciones` — son el paso previo a obtener uno) y
@@ -340,6 +367,15 @@ Response `200 OK`:
 
 (`ultimo_acceso_en` se omite si es `null` — `omitempty`.)
 
+**`tiene_mfa` ya refleja un valor real, desde el cierre de la extensión
+OTP/MFA.** Antes de esa extensión siempre valía `false`: no existía
+ningún caso de uso que lo activara. Hoy pasa a `true` exactamente en el
+momento en que `POST /identidad/usuarios/actual/factores-mfa/confirmacion`
+confirma el primer código TOTP (INV-ID-08 — el flag nunca se activa antes
+de esa confirmación), y vuelve a `false` si el usuario deshabilita su
+único factor (`DELETE /identidad/usuarios/actual/factores-mfa`). Ver la
+sección de MFA más abajo.
+
 Errores posibles:
 
 | Status | Causa |
@@ -366,13 +402,173 @@ ninguno implementado.
 > sin el middleware, queda público, y se emite un `slog.Warn` explícito
 > ("NO USAR EN PRODUCCIÓN"). No es el camino real de arranque.
 
+## MFA — segundo factor TOTP (autoservicio del propio sujeto)
+
+Extensión sobre Identidad y Acceso cerrada en este hito
+(`docs/design/otp-mfa.md`, ADR 0037-0040) — **no es un bounded context
+nuevo**: MFA es una propiedad de la identidad del sujeto, no de su sesión
+ni de su organización (§0.1 del diseño). Los tres endpoints exigen
+**siempre** Bearer, a diferencia de los cuatro documentados arriba:
+actúan sobre el propio sujeto autenticado, sin ID en la ruta ni en el
+cuerpo (mismo criterio que `DELETE /acceso/sesiones/actual`). El paso que
+**completa** el login cuando `POST /acceso/sesiones` exige un segundo
+factor (`requiere_segundo_factor: true`, `motivo_step_up`) vive en
+**Acceso**, no aquí — ver `POST /acceso/sesiones/segundo-factor` en
+`internal/acceso/README.md`.
+
+### `POST /identidad/usuarios/actual/factores-mfa` — Habilitar un segundo factor TOTP
+
+Genera un `FactorMFA` sin confirmar y devuelve el secreto en claro + la
+URI de provisionamiento (`otpauth://totp/...`) — la única vez que ambos
+salen del proceso (INV-MFA-02). El cliente construye el QR (o muestra el
+secreto como texto) y lo descarta: el servidor nunca vuelve a tener el
+secreto en claro después de esta respuesta. **Verificado en vivo**: el
+código TOTP calculado a partir de este secreto con una implementación
+independiente de RFC 6238 (Python desde cero, sin bibliotecas) coincidió
+exactamente con lo que el servidor esperó en la confirmación.
+
+Request: sin cuerpo.
+
+Response `200 OK`:
+
+```json
+{
+  "id_factor": "0199...",
+  "secreto_en_claro": "JBSWY3DPEHPK3PXP",
+  "uri_provisionamiento": "otpauth://totp/Moterus:ana@ejemplo.com?secret=JBSWY3DPEHPK3PXP&issuer=Moterus"
+}
+```
+
+Errores:
+
+| Status | Causa | Error de dominio |
+|---|---|---|
+| `401` | Sin Bearer válido | — |
+| `403` | La cuenta no está operativa (`Usuario.PuedeIniciarSesion` falla: correo no verificado / suspendida / bloqueada — mismos motivos que el login, reutilizados en vez de duplicar la máquina de estados) | `ErrCorreoNoVerificado` / `ErrCuentaSuspendida` / `ErrCuentaBloqueada` |
+| `409` | Ya existe un factor confirmado y activo — uno por usuario en el MVP (ADR 0037); hay que deshabilitar el actual antes de habilitar uno nuevo | `ErrLimiteFactoresMFAExcedido` |
+
+`aud` específico: ninguno (mismo token de acceso normal). Rate limit
+especial: ninguno implementado todavía — a diferencia de
+`verificar_otp` (ver `internal/acceso/README.md`), habilitar un factor no
+es en sí mismo un oráculo de fuerza bruta.
+
+### `POST /identidad/usuarios/actual/factores-mfa/confirmacion` — Confirmar el factor con el primer código
+
+Verifica el primer código TOTP contra el factor recién habilitado. Si es
+válido: activa `Usuario.tieneMFA` (INV-ID-08 — el flag se activa
+exactamente aquí, nunca en el paso anterior), genera los 10 códigos de
+respaldo y los devuelve en claro, la única vez que se muestran (ADR
+0040). **Verificado en vivo**: la respuesta trajo exactamente 10 códigos.
+
+Request:
+
+```json
+{ "id_factor": "0199...", "codigo": "123456" }
+```
+
+Response `200 OK`:
+
+```json
+{
+  "codigos_respaldo": ["3K7H9D2F1A", "..."]
+}
+```
+
+(10 elementos: alfanuméricos en mayúsculas, sin `0/O/1/I/L` para evitar
+ambigüedad visual.)
+
+Errores:
+
+| Status | Causa | Error de dominio |
+|---|---|---|
+| `401` | Sin Bearer válido | — |
+| `404` | `id_factor` no existe, o existe pero pertenece a otro usuario — **indistinguibles**, mismo criterio anti-enumeración que el resto del sistema | `ErrFactorMFANoEncontrado` |
+| `409` | El factor ya estaba confirmado | `ErrFactorMFAYaConfirmado` |
+| `422` | El código no coincide con el TOTP esperado | `ErrCodigoOTPInvalido` |
+
+**Guarda los 10 códigos ahora**: no vuelven a estar disponibles en
+ninguna respuesta futura; el servidor solo conserva su hash (SHA-256).
+
+### `DELETE /identidad/usuarios/actual/factores-mfa` — Deshabilitar el segundo factor
+
+Exige, además del Bearer, un código válido del propio factor (TOTP
+vigente o de respaldo no usado) en el cuerpo — **no basta con estar
+autenticado** (ADR 0039, INV-MFA-05): una sesión robada no debería poder
+desarmar la protección que ella misma debería tener.
+
+Request:
+
+```json
+{ "codigo": "123456" }
+```
+
+Response: `204 No Content`.
+
+Errores:
+
+| Status | Causa | Error de dominio |
+|---|---|---|
+| `401` | Sin Bearer válido | — |
+| `422` | Código incorrecto, **o** el usuario no tiene ningún factor confirmado — mismo status y mismo mensaje genérico en ambos casos (INV-MFA-08: no se filtra si el problema es "no tenés MFA" o "el código está mal") | `ErrCodigoOTPInvalido` |
+
+Un usuario que perdió tanto su dispositivo TOTP como sus 10 códigos de
+respaldo **no puede autodeshabilitar MFA** por este endpoint — necesita
+un canal de soporte humano (backlog, ver ADR 0039 §Consecuencias).
+
+`aud`/rate limit: iguales a los dos endpoints anteriores.
+
+**Gotcha real ya corregido, no un pendiente (commit `1e06146`):** el
+diseño original de `FactorMFA` no distinguía "confirmado alguna vez" de
+"vigente ahora mismo" — con un solo booleano `confirmado`, deshabilitar
+MFA habría sido **irreversible**: `ContarConfirmadosDeUsuario` seguiría
+contando el factor deshabilitado para siempre, bloqueando cualquier
+`HabilitarMFA` posterior del mismo usuario. Se agregó el campo `activo`
+(columna `factores_mfa.activo`, `db/migraciones/000015_crear_factores_mfa.up.sql`),
+distinto de `confirmado`: `confirmado` es un hecho histórico que nunca
+vuelve a `false`; `activo` sí puede volver a `false`
+(`FactorMFA.Deshabilitar`) y a `true` de nuevo con un factor nuevo. El
+repositorio y el índice único parcial (`factores_mfa_confirmado_activo_por_usuario_idx`)
+filtran por ambas columnas — ver el comentario de cabecera de esa
+migración para el razonamiento completo.
+
 ## Auditoría
 
-Los tres endpoints (registro, autenticación en sus tres desenlaces, y
-consulta por un tercero) emiten un evento a la bitácora forense
-append-only con hash-chaining (ADR 0005), dentro de la misma transacción
-que la escritura de negocio cuando aplica (INV-ID-15). Catálogo completo
-de acciones: `docs/catalogos/acciones-auditoria.md`.
+Los tres endpoints del MVP (registro, autenticación en sus tres
+desenlaces, y consulta por un tercero) emiten un evento a la bitácora
+forense append-only con hash-chaining (ADR 0005), dentro de la misma
+transacción que la escritura de negocio cuando aplica (INV-ID-15).
+Catálogo completo de acciones: `docs/catalogos/acciones-auditoria.md`.
+
+Los tres endpoints de MFA suman **5 acciones nuevas** al catálogo cerrado
+(`usuario.mfa_habilitado`, `usuario.mfa_confirmado`,
+`usuario.mfa_deshabilitado`, `usuario.codigo_respaldo_consumido`,
+`usuario.otp_verificacion_fallida` — migración
+`db/migraciones/000016_acciones_auditoria_mfa.up.sql`). `VerificarOTP`
+(el camino caliente que **Acceso** consume, vía su ACL, en cada login con
+step-up) audita únicamente los fallos (`VerificacionOTPFallida`) y el
+consumo de un código de respaldo (`CodigoRespaldoConsumido`) — nunca un
+"éxito" ad hoc de la verificación en sí: ese evento ya lo aporta Acceso
+al completar el login (`sesion.iniciada`), mismo criterio de "no
+dupliques la auditoría entre quien pregunta y quien decide" que usa
+Tenencia con `AutorizacionDenegada`.
+
+### Gotcha real: el catálogo cerrado de auditoría bloqueaba TODA operación de MFA con 500
+
+Encontrado y corregido durante la verificación en vivo de este cierre
+(servidor real, Postgres+Redis reales) — **no un pendiente**: el ACL de
+auditoría de Identidad (`internal/identidad/adaptadores/auditoria/mapeo.go`)
+no reconocía los 5 eventos de dominio nuevos de MFA
+(`FactorMFAHabilitado`, `FactorMFAConfirmado`, `FactorMFADeshabilitado`,
+`CodigoRespaldoConsumido`, `VerificacionOTPFallida`). Por INV-ID-15 (el
+catálogo cerrado de auditoría aborta la transacción de negocio si no
+reconoce el evento, en vez de degradar silenciosamente), **cualquier**
+operación de MFA fallaba con `500` — incluida `HabilitarMFA`, la más
+inofensiva de las tres. Ya corregido: `mapeo.go` reconoce los 5 casos.
+Recordatorio concreto para el próximo evento de dominio que se agregue en
+cualquier contexto de este sistema: hay que tocar **tres** lugares a la
+vez (el evento en sí, la migración del catálogo, y el ACL de mapeo de
+auditoría) — tocar solo los dos primeros deja el tercero silenciosamente
+roto hasta que alguien lo ejercite en runtime.
 
 ## Referencias
 
@@ -392,4 +588,13 @@ de acciones: `docs/catalogos/acciones-auditoria.md`.
   Tenencia): `docs/adr/0029-modelo-roles-catalogo-cerrado.md`,
   `docs/adr/0030-autorizacion-por-consulta-en-cada-peticion.md`,
   `docs/adr/0031-rls-multi-tenant-guc-por-transaccion.md`
+- Diseño de la extensión OTP/MFA (extiende Identidad y Acceso, no un
+  contexto nuevo): `docs/design/otp-mfa.md`
+- ADR 0037 (MFA del MVP limitado a TOTP): `docs/adr/0037-mfa-mvp-limitado-a-totp.md`
+- ADR 0038 (token de step-up, emitido por Acceso): `docs/adr/0038-token-step-up-jwt-propio-ttl-corto.md`
+- ADR 0039 (deshabilitar MFA exige código propio): `docs/adr/0039-deshabilitar-mfa-exige-codigo-propio.md`
+- ADR 0040 (códigos de respaldo generados en la confirmación): `docs/adr/0040-codigos-respaldo-en-confirmacion.md`
+- README de Acceso (completa el login con el segundo factor —
+  `POST /acceso/sesiones/segundo-factor`, el token de step-up, el claim
+  `amr` con `"otp"`): `internal/acceso/README.md`
 - Índice completo de ADRs: `docs/adr/README.md`

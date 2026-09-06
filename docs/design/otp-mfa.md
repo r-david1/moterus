@@ -1,11 +1,46 @@
 # Diseño — OTP/MFA: segundo factor y el flujo de step-up
 
-> Estado: **propuesta de diseño (sin código Go)**. Autor: Claude Code (agente `orquestador-auth`, redactado directamente por no poder despachar `arquitecto-ddd-hexagonal` en el momento de escribir esto — límite de tasa del modelo subyacente; el contenido sigue el mismo proceso y las mismas fuentes que ese agente habría usado).
-> Fecha: 2026-09-04.
+> Estado: **implementada**. Autor original: Claude Code (agente
+> `orquestador-auth`, redactado directamente por no poder despachar
+> `arquitecto-ddd-hexagonal` en el momento de escribir esto — límite de
+> tasa del modelo subyacente; el contenido siguió el mismo proceso y las
+> mismas fuentes que ese agente habría usado).
+> Fecha del diseño original: 2026-09-04. Fecha de cierre de implementación
+> y documentación: 2026-09-06.
 > Alcance: extiende **Identidad** (factor MFA, verificación OTP) y **Acceso** (token de step-up, endpoint de segundo factor). No es un bounded context nuevo — ver §0.1, la primera decisión que este documento tiene que justificar.
 > Depende de: ADR 0008 (Argon2id — no aplica al secreto TOTP, que se cifra, no se hashea), ADR 0009 (frontera Identidad/Acceso, no se reabre), ADR 0018 (Confianza + Redis), ADR 0019/0020 (sesión y firma de Acceso).
 > Consumidores: **Acceso** (el flujo de login completo pasa por aquí en cuanto un usuario activa MFA), **Confianza** (nueva acción `verificar_otp`, oráculo de fuerza bruta clásico).
-> Estado del código hoy: el terreno ya está preparado en código cerrado (ver §0.2) pero no existe ningún caso de uso, endpoint, tabla ni tipo de dominio para MFA/OTP todavía.
+>
+> **Estado del código hoy: implementado end-to-end** (dominio, puertos,
+> aplicación, migraciones `000015`/`000016`, adaptadores Postgres/cripto/JWT/HTTP
+> con Huma v2) y verificado en vivo contra un servidor real (Postgres+Redis
+> reales, con una implementación de TOTP en Python escrita desde cero para
+> confirmar interoperabilidad real, no solo que el propio código se valida
+> a sí mismo): habilitar → confirmar con un código TOTP calculado de forma
+> independiente → login que exige step-up (`401` + `token_step_up`) → los
+> dos ataques de *type confusion* bloqueados (INV-MFA-03, en ambos
+> sentidos) → completar el segundo factor → sesión completa con
+> `amr=["pwd","otp"]` → esa sesión funcionando como Bearer normal →
+> integridad de la cadena de auditoría con las 5 acciones nuevas más
+> `usuario.step_up_requerido`/`sesion.iniciada` en el orden esperado. La
+> referencia **operativa** para integradores es
+> `internal/identidad/README.md` (los 3 endpoints de autoservicio de MFA)
+> y `internal/acceso/README.md` (el endpoint de segundo factor, el token
+> de step-up, el claim `amr`) — este documento sigue siendo la referencia
+> normativa de diseño, pero donde discrepe con el código, **el código es
+> la fuente de verdad**; las discrepancias puntuales detectadas quedan
+> anotadas en línea más abajo (§§1.2, 3.3, 6, 7) en vez de reescribir el
+> documento entero.
+>
+> **Gap real encontrado y ya corregido durante la verificación en vivo,
+> no un pendiente**: el ACL de auditoría de Identidad
+> (`internal/identidad/adaptadores/auditoria/mapeo.go`) no reconocía los 5
+> eventos de dominio nuevos de §1.6 al momento de implementarlos, lo que
+> hacía fallar con `500` cualquier operación de MFA (INV-ID-15, catálogo
+> cerrado). Ya corregido — ver el detalle en `internal/identidad/README.md`,
+> sección "Auditoría". Un segundo gap, de diseño de dominio (no de
+> integración con auditoría), se documenta en línea en §1.4/§6 más abajo:
+> el campo `activo` de `FactorMFA`, que este documento no anticipó.
 
 ---
 
@@ -46,6 +81,21 @@ El boceto original preveía tres tipos de factor (TOTP/email/SMS). Este diseño 
 
 ### 1.2 Diagrama
 
+> **Nota de discrepancia diseño vs. implementación (encontrada y corregida
+> durante la implementación, commit `1e06146`, no un pendiente):** este
+> diagrama no anticipó que `confirmado` no alcanza para saber si un factor
+> está *vigente*. Con un solo booleano, deshabilitar MFA habría sido
+> irreversible: `confirmado` es (correctamente) un hecho histórico que
+> nunca vuelve a `false`, así que "contar factores confirmados" seguiría
+> contando uno ya deshabilitado para siempre, bloqueando cualquier
+> `HabilitarMFA` posterior del mismo usuario. La implementación real
+> agrega un campo `activo bool` (más el método `Deshabilitar(ahora)`, no
+> listado abajo), independiente de `confirmado`: "confirmado y vigente" a
+> efectos de INV-MFA-01/ADR 0037 significa `confirmado = true AND activo =
+> true` en todo el sistema (dominio, repositorio, índice único parcial de
+> §6). Ver `internal/identidad/README.md`, sección de MFA, para el
+> razonamiento completo.
+
 ```mermaid
 classDiagram
     class FactorMFA {
@@ -55,10 +105,12 @@ classDiagram
         -tipo TipoFactor
         -secretoCifrado SecretoTOTPCifrado
         -confirmado bool
+        -activo bool
         -creadoEn time.Time
         -confirmadoEn *time.Time
         +Confirmar(codigo, ahora) error
         +VerificarCodigo(codigo, ahora) bool
+        +Deshabilitar(ahora)
         +EventosPendientes() []EventoDominio
     }
 
@@ -277,7 +329,17 @@ type ClaimsStepUp struct {
 
 ### 3.3 `DeshabilitarMFA` (Identidad)
 
-Exige un código válido (TOTP o de respaldo) en el propio comando — **no basta con estar autenticado** (*ADR candidato 0039*, INV-MFA-05, §9): una sesión robada no debería poder desarmar el segundo factor de la cuenta que la protege sin volver a demostrar posesión del factor. Verifica, elimina el `FactorMFA`, flip `tieneMFA = false` si no queda ningún otro confirmado (hoy siempre, MVP de un solo factor), emite `FactorMFADeshabilitado`.
+Exige un código válido (TOTP o de respaldo) en el propio comando — **no basta con estar autenticado** (*ADR candidato 0039*, INV-MFA-05, §9): una sesión robada no debería poder desarmar el segundo factor de la cuenta que la protege sin volver a demostrar posesión del factor. Verifica, flip `tieneMFA = false` si no queda ningún otro confirmado (hoy siempre, MVP de un solo factor), emite `FactorMFADeshabilitado`.
+
+> **Nota de discrepancia diseño vs. implementación**: este párrafo decía
+> "elimina el `FactorMFA`". La implementación real **no borra la fila**:
+> `FactorMFA.Deshabilitar(ahora)` pone `activo = false` (`confirmado` se
+> queda en `true` para siempre, es un hecho histórico) y el repositorio
+> persiste esa mutación con `Guardar`, nunca con un `DELETE` — mismo
+> criterio que el resto del sistema aplica a organizaciones, membresías e
+> invitaciones (ningún estado de negocio se borra físicamente, ADR 0017).
+> Esto es lo que permite volver a `HabilitarMFA` desde cero más adelante:
+> ver la nota de §1.2/§6 sobre el campo `activo`.
 
 ### 3.4 `VerificarOTP` (Identidad) — implementa `puertos.VerificadorOTP`
 
@@ -367,6 +429,16 @@ internal/acceso/
 
 ## 6. Migraciones necesarias
 
+> **Nota de discrepancia diseño vs. implementación**: la migración real
+> (`db/migraciones/000015_crear_factores_mfa.up.sql`) agrega una columna
+> `activo BOOLEAN NOT NULL DEFAULT true` que este boceto no tenía, y el
+> índice único parcial de abajo filtra por `confirmado = true AND activo =
+> true`, no solo por `confirmado = true` — ver la nota de §1.2 para el
+> porqué (commit `1e06146`). El SQL de abajo queda tal como se diseñó
+> originalmente, como referencia histórica; el esquema real vigente está
+> en el archivo de migración, con su propio comentario de cabecera
+> explicando la diferencia.
+
 **`000015_crear_factores_mfa.{up,down}.sql`** (siguiente número libre tras `000014` de Tenencia):
 
 ```sql
@@ -417,9 +489,18 @@ Sin RLS: estas tablas no son multi-tenant, se acotan por `usuario_id` como todo 
 
 | Método | Ruta | Descripción | Errores |
 |---|---|---|---|
-| `POST` | `/identidad/usuarios/actual/factores-mfa` | Habilitar MFA — devuelve secreto + URI de QR (una sola vez) | 401; 409 `ErrLimiteFactoresMFAExcedido` |
-| `POST` | `/identidad/usuarios/actual/factores-mfa/confirmacion` | Confirmar con el primer código — devuelve 10 códigos de respaldo (una sola vez) | 401; 404 factor no encontrado; 422 código inválido |
+| `POST` | `/identidad/usuarios/actual/factores-mfa` | Habilitar MFA — devuelve secreto + URI de QR (una sola vez) | 401; 403 cuenta no operativa; 409 `ErrLimiteFactoresMFAExcedido` |
+| `POST` | `/identidad/usuarios/actual/factores-mfa/confirmacion` | Confirmar con el primer código — devuelve 10 códigos de respaldo (una sola vez) | 401; 404 factor no encontrado; 409 `ErrFactorMFAYaConfirmado`; 422 código inválido |
 | `DELETE` | `/identidad/usuarios/actual/factores-mfa` | Deshabilitar — exige `codigo` en el cuerpo | 401; 422 código inválido |
+
+> **Nota de discrepancia diseño vs. implementación**: la columna de
+> errores de arriba, tal como se redactó originalmente, omitía el `403`
+> de cuenta no operativa en `Habilitar` (`Usuario.PuedeIniciarSesion`,
+> reutilizado en vez de duplicar la máquina de estados) y el `409`
+> `ErrFactorMFAYaConfirmado` en `ConfirmarFactor` (un reintento de
+> confirmación sobre un factor ya confirmado). Ya corregida arriba con el
+> comportamiento real; el detalle completo, con el status exacto de cada
+> caso, está en `internal/identidad/README.md`, sección de MFA.
 
 ### Acceso — completar el login
 
