@@ -2,6 +2,7 @@ package puertos
 
 import (
 	"context"
+	"time"
 
 	"github.com/r-david1/moterus/internal/confianza/dominio"
 )
@@ -50,4 +51,201 @@ type ResultadoIntento struct {
 type EvaluadorDeRiesgo interface {
 	Evaluar(ctx context.Context, s Solicitud) (dominio.Decision, error)
 	RegistrarResultado(ctx context.Context, r ResultadoIntento) error
+}
+
+// =============================================================================
+// Colas de acceso virtual (docs/design/colas-virtuales.md §2.1). Extensión
+// aditiva sobre el archivo existente: nada de lo de arriba cambia.
+// =============================================================================
+
+// PorteroDeSala es el puerto de camino caliente de la sala de espera: lo
+// implementa aplicacion.PorteroDeSalaCasoDeUso y lo consume EXCLUSIVAMENTE
+// el middleware HTTP MiddlewareSalaDeEspera (§7.3 del diseño) — nunca un
+// caso de uso de otro contexto bounded. Sus tres operaciones tocan
+// exclusivamente Redis y CPU local, jamás Postgres (INV-COLA-08); por eso
+// sus DTOs de entrada/salida son primitivos, mismo criterio que Solicitud
+// más arriba: nunca se filtra dominio.SalaDeEspera ni dominio.TicketDeCola
+// hacia el borde HTTP.
+type PorteroDeSala interface {
+	// SalaVigentePara responde, desde la instantánea en memoria del
+	// reconciliador (§3.7 del diseño), si la ruta+alcance de esta petición
+	// está protegida ahora mismo. Es la primera pregunta del middleware y no
+	// hace E/S: tiene que poder responderse incluso con Redis caído, que es
+	// precisamente cuando hay que saber el ModoDegradado (§8). El booleano
+	// de retorno indica si hay una sala vigente para esa clave.
+	SalaVigentePara(ctx context.Context, q ConsultaSalaVigente) (VistaSalaVigente, bool)
+
+	// Ingresar emite un ticket y devuelve el turno asignado (§3.4 del
+	// diseño). Es la operación pública, sin autenticación, detrás de
+	// POST /confianza/salas-espera/{aliasSala}/tickets.
+	Ingresar(ctx context.Context, cmd ComandoIngresarASala) (ResultadoTurno, error)
+
+	// ConsultarTurno es de solo lectura: no muta nada salvo refrescar el TTL
+	// del ticket (§3.5 y §6.2 del diseño). Nunca toca Postgres ni revela
+	// nada de la organización dueña o de la ruta protegida (INV-COLA-15).
+	ConsultarTurno(ctx context.Context, q ConsultaTurno) (ResultadoTurno, error)
+
+	// Reclamar consume el turno (§3.6 del diseño). Es la única operación
+	// que puede dejar pasar la petición real, y es de un solo uso
+	// (INV-COLA-06). Lo invoca el middleware, nunca un endpoint propio.
+	Reclamar(ctx context.Context, cmd ComandoReclamarTurno) (ResultadoTurno, error)
+}
+
+// GestorDeSalasDeEspera es el puerto de administración (frío, §3.1-§3.3 del
+// diseño): muta el agregado SalaDeEspera en Postgres y reproyecta a Redis en
+// la misma unidad de trabajo lógica. Lo consumen los endpoints de
+// administración org-scoped (§7.2) — las salas de alcance sistema se abren
+// por un subcomando de CLI que invoca el mismo puerto con IDSujeto vacío,
+// nunca por HTTP (este producto no tiene rol de administrador de
+// plataforma, §7.2 del diseño).
+type GestorDeSalasDeEspera interface {
+	Abrir(ctx context.Context, cmd ComandoAbrirSala) (VistaSala, error)
+	CambiarRitmo(ctx context.Context, cmd ComandoCambiarRitmoAdmision) (VistaSala, error)
+	CambiarEstado(ctx context.Context, cmd ComandoCambiarEstadoSala) (VistaSala, error)
+}
+
+// ConsultorDeSalas alimenta el endpoint público agregado
+// (GET /confianza/salas-espera/{aliasSala}, §7.1 del diseño): datos de la
+// sala pensados para un tercero anónimo (longitud aproximada, estado, ETA),
+// nunca de un ticket concreto ni de la organización dueña (INV-COLA-15).
+type ConsultorDeSalas interface {
+	ObtenerPorAlias(ctx context.Context, q ConsultaSalaPorAlias) (VistaSalaPublica, error)
+}
+
+// --- comandos, consultas y resultados (primitivos, nunca DTOs HTTP) --------
+
+// ConsultaSalaVigente transporta lo que PorteroDeSala.SalaVigentePara
+// necesita para resolver la clave de sala sin depender de dominio.ClaveSala
+// (el middleware no conoce el dominio, solo el valor textual de la ruta que
+// declaró al montarse, §7.3 del diseño).
+type ConsultaSalaVigente struct {
+	Ruta           string // valor del catálogo cerrado dominio.RutaProtegida
+	IDOrganizacion string // "" para alcance sistema
+}
+
+// VistaSalaVigente es lo que el middleware necesita para decidir sin tocar
+// Redis todavía: si hay sala, su alias (para armar el 503 de §7.4), su
+// estado (abierta admite ingresos nuevos; drenando no, pero sigue
+// reclamando turnos vivos) y el modo degradado a aplicar si Redis no
+// responde (§8 del diseño).
+type VistaSalaVigente struct {
+	Alias         string
+	Clave         string
+	Estado        string // "abierta" | "drenando"
+	ModoDegradado string // "permitir" | "rechazar"
+}
+
+// ComandoIngresarASala transporta la entrada de PorteroDeSala.Ingresar.
+type ComandoIngresarASala struct {
+	Alias  string
+	Origen dominio.OrigenSolicitud
+}
+
+// ConsultaTurno transporta la entrada de PorteroDeSala.ConsultarTurno.
+type ConsultaTurno struct {
+	Alias       string
+	TicketPlano string
+}
+
+// ComandoReclamarTurno transporta la entrada de PorteroDeSala.Reclamar. La
+// Clave ya viene resuelta por el middleware desde VistaSalaVigente: el
+// caso de uso no vuelve a calcularla.
+type ComandoReclamarTurno struct {
+	Clave       string // resuelta por el middleware desde VistaSalaVigente
+	TicketPlano string
+}
+
+// ResultadoTurno es lo que ve el cliente (§7.1 del diseño). TicketPlano
+// viene poblado SOLO en la respuesta de Ingresar (única vez que el ticket
+// sale del proceso, INV-COLA-07), igual que el secreto TOTP en
+// ResultadoHabilitarMFA de Identidad.
+type ResultadoTurno struct {
+	TicketPlano     string
+	Desenlace       string // catálogo cerrado dominio.DesenlaceDeAdmision
+	Posicion        int64
+	LongitudCola    int64
+	EsperaEstimada  time.Duration
+	TurnoEstimadoEn time.Time
+	ReconsultarEn   time.Duration // intervalo de sondeo dictado por el servidor (§7.1)
+}
+
+// ComandoAbrirSala transporta la entrada de GestorDeSalasDeEspera.Abrir
+// (§3.1 del diseño).
+type ComandoAbrirSala struct {
+	Alias               string
+	Ruta                string
+	IDOrganizacion      string // "" ⇒ alcance sistema
+	RitmoAdmision       int
+	CapacidadMaximaCola int64
+	VentanaReclamo      time.Duration
+	ModoDegradado       string
+	IDSujeto            string // "" para el alcance sistema, operado fuera de la API (§7.2)
+	Origen              dominio.OrigenSolicitud
+}
+
+// ComandoCambiarRitmoAdmision transporta la entrada de
+// GestorDeSalasDeEspera.CambiarRitmo (§3.2 del diseño).
+type ComandoCambiarRitmoAdmision struct {
+	IDSala        string
+	RitmoAdmision int
+	IDSujeto      string
+	Origen        dominio.OrigenSolicitud
+}
+
+// ComandoCambiarEstadoSala transporta la entrada de
+// GestorDeSalasDeEspera.CambiarEstado (drenar/cerrar/reabrir, §3.3 del
+// diseño).
+type ComandoCambiarEstadoSala struct {
+	IDSala   string
+	Destino  string // "abierta" | "drenando" | "cerrada"
+	IDSujeto string
+	Origen   dominio.OrigenSolicitud
+}
+
+// VistaSala es la proyección completa de una SalaDeEspera para los
+// endpoints de administración (§7.2 del diseño: POST/PATCH/GET devuelven
+// VistaSala). No está definida explícitamente en el diseño; se infiere de
+// dos fuentes: la tabla de endpoints de §7.2 (que exige una vista rica,
+// a diferencia de la pública y minimalista VistaSalaPublica de §7.1/INV-
+// COLA-15) y los getters ya existentes del agregado
+// confianza/dominio.SalaDeEspera. A diferencia de VistaSalaPublica, esta
+// vista SÍ puede revelar el dueño y la ruta protegida: solo la ve un
+// operador ya autorizado con "organizacion.editar"/"organizacion.ver"
+// sobre esa misma organización (§7.2), nunca un tercero anónimo.
+type VistaSala struct {
+	ID                  string
+	Alias               string
+	AlcanceTipo         string // "sistema" | "organizacion"
+	IDOrganizacion      string // "" para alcance sistema
+	Ruta                string
+	Estado              string
+	RitmoAdmision       int
+	CapacidadMaximaCola int64
+	VentanaReclamo      time.Duration
+	ModoDegradado       string
+	CreadaPor           string // "" para alcance sistema (§7.2)
+	CreadaEn            time.Time
+	AbiertaEn           *time.Time // nil si la sala nunca se abrió
+	CerradaEn           *time.Time // nil si la sala no está cerrada
+}
+
+// ConsultaSalaPorAlias transporta la entrada de
+// ConsultorDeSalas.ObtenerPorAlias. No está definida explícitamente en el
+// diseño; es análoga a ConsultaTurno (arriba), pero sin ticket: el endpoint
+// público agregado (GET /confianza/salas-espera/{aliasSala}, §7.1) solo
+// necesita el alias.
+type ConsultaSalaPorAlias struct {
+	Alias string
+}
+
+// VistaSalaPublica es la proyección minimalista para el endpoint público
+// agregado (§7.1 del diseño, "Cache-Control: public, max-age=5"): nunca
+// revela la organización dueña, la ruta protegida ni la existencia de otras
+// salas (INV-COLA-15).
+type VistaSalaPublica struct {
+	Alias              string
+	Estado             string
+	LongitudAproximada int64
+	EsperaEstimada     time.Duration
+	ReconsultarEn      time.Duration
 }
