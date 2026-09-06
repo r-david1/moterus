@@ -114,6 +114,13 @@ func mapearEvento(e dominio.EventoDominio) (filaAuditoria, bool) {
 			recursoID: ev.IDUsuario,
 			resultado: resultadoExito,
 			usuarioID: ev.IDUsuario,
+			// detalles no puede quedar como el nil map por defecto: la
+			// migración 000002 exige jsonb_typeof(detalles) = 'object', y
+			// json.Marshal(map[string]any(nil)) serializa "null", no "{}"
+			// (bug real, encontrado durante la verificación de OTP/MFA —
+			// ver el caso VerificacionOTPFallida más abajo, que sí lo
+			// dispara en producción).
+			detalles: map[string]any{},
 		}, true
 
 	case dominio.CredencialRehasheada:
@@ -123,6 +130,7 @@ func mapearEvento(e dominio.EventoDominio) (filaAuditoria, bool) {
 			recursoID: ev.IDUsuario,
 			resultado: resultadoExito,
 			usuarioID: ev.IDUsuario,
+			detalles:  map[string]any{}, // ver la nota de ContrasenaCambiada arriba
 		}, true
 
 	case dominio.CorreoVerificado:
@@ -231,6 +239,17 @@ func mapearEvento(e dominio.EventoDominio) (filaAuditoria, bool) {
 			recursoID: ev.IDUsuario,
 			resultado: resultadoFallo,
 			usuarioID: ev.IDUsuario,
+			// Bug real encontrado durante la verificación de integración de
+			// OTP/MFA: sin este campo (nil map por defecto), json.Marshal
+			// serializa "null" en vez de "{}", y la migración 000002 exige
+			// jsonb_typeof(detalles) = 'object' — CUALQUIER código OTP
+			// incorrecto (TOTP, código de respaldo reutilizado, o el código
+			// de DeshabilitarMFA) hacía fallar el INSERT de auditoría y
+			// devolvía 500 en vez del 401/422 esperado. VerificacionOTPFallida
+			// no tiene campos propios más allá de IDUsuario (ya en
+			// usuarioID/recursoID), así que un mapa vacío es el contenido
+			// correcto, no solo el que evita el crash.
+			detalles: map[string]any{},
 		}, true
 
 	default:

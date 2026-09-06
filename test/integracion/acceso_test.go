@@ -41,6 +41,11 @@ import (
 	accesodominio "github.com/r-david1/moterus/internal/acceso/dominio"
 	accesopuertos "github.com/r-david1/moterus/internal/acceso/puertos"
 
+	confianzaredis "github.com/r-david1/moterus/internal/confianza/adaptadores/redis"
+	"github.com/r-david1/moterus/internal/confianza/adaptadores/turnstile"
+	confianzaaplicacion "github.com/r-david1/moterus/internal/confianza/aplicacion"
+	confianzapuertos "github.com/r-david1/moterus/internal/confianza/puertos"
+
 	"github.com/r-david1/moterus/internal/identidad/adaptadores/auditoria"
 	identidadconfianza "github.com/r-david1/moterus/internal/identidad/adaptadores/confianza"
 	"github.com/r-david1/moterus/internal/identidad/adaptadores/cripto"
@@ -80,16 +85,54 @@ func (g gestorMFACompuestoDePrueba) Deshabilitar(ctx context.Context, cmd identi
 
 // --- ensamblaje del servidor bajo prueba (Identidad + Acceso) ---------------
 
+// servidorAccesoDePrueba agrupa la app Fiber ya ensamblada por
+// nuevoServidorAcceso junto con el EmisorTokenStepUp que comparte su mismo
+// Llavero: algunos tests de seguridad (p. ej. un token de step-up ya
+// expirado, INV-MFA-04) necesitan emitir un token de step-up directamente,
+// con un `ahora` del pasado, en vez de esperar 5 minutos de verdad — algo
+// que solo es posible teniendo una referencia al mismo emisor que el
+// servidor ya usa internamente (accesoaplicacion.CompletarSegundoFactorCasoDeUso
+// no expone el suyo).
+type servidorAccesoDePrueba struct {
+	App          *fiber.App
+	EmisorStepUp *accesojwt.EmisorTokenStepUp
+}
+
 // nuevoServidorAcceso reproduce el mismo cableado que
-// cmd/api/main.go#montarIdentidadYAcceso, con Identidad detrás de un
-// EvaluadorConfianzaNoOp (mismo criterio que nuevoServidorIdentidad: no
-// acoplar estas aserciones de negocio a contadores de Redis compartidos
-// entre corridas de test) y una llave de firma Ed25519 efímera generada
-// para cada servidor de test (nunca la misma entre tests, ADR 0020 §4).
-// Si REDIS_URL está definido, monta la ListaRevocacion real (para que los
-// tests de revocación inmediata se ejerzan de verdad); si no, usa el noop
-// y la revocación sigue siendo correcta vía Postgres (INV-ACC-15).
-func nuevoServidorAcceso(t *testing.T, pool *pgxpool.Pool) *fiber.App {
+// cmd/api/main.go#montarIdentidadYAcceso, con Identidad y el
+// EvaluadorConfianza de Acceso detrás de un no-op (mismo criterio que
+// nuevoServidorIdentidad: no acoplar estas aserciones de negocio a
+// contadores de Redis compartidos entre corridas de test) y una llave de
+// firma Ed25519 efímera generada para cada servidor de test (nunca la misma
+// entre tests, ADR 0020 §4). Si REDIS_URL está definido, monta la
+// ListaRevocacion real (para que los tests de revocación inmediata se
+// ejerzan de verdad); si no, usa el noop y la revocación sigue siendo
+// correcta vía Postgres (INV-ACC-15).
+func nuevoServidorAcceso(t *testing.T, pool *pgxpool.Pool) servidorAccesoDePrueba {
+	t.Helper()
+	return nuevoServidorAccesoInterno(t, pool, false)
+}
+
+// nuevoServidorAccesoConConfianzaReal es igual que nuevoServidorAcceso pero
+// monta accesoconfianza.EvaluadorConfianzaReal (ADR 0018) sobre Redis real
+// en vez del no-op — exactamente lo que cmd/api/main.go monta cuando
+// REDIS_URL está configurado. Existe para poder verificar con un test de
+// integración real que el guardián de perímetro de
+// POST /acceso/sesiones/segundo-factor (accion "verificar_otp", §7 del
+// diseño otp-mfa.md) efectivamente bloquea con 429 tras el umbral
+// documentado en PoliticaLimitesPorDefecto — algo que nuevoServidorAcceso
+// (no-op a propósito) nunca puede ejercer. Se salta limpiamente si
+// REDIS_URL no está definido, mismo criterio que
+// nuevoServidorIdentidadConConfianzaReal (entorno_test.go).
+func nuevoServidorAccesoConConfianzaReal(t *testing.T, pool *pgxpool.Pool) servidorAccesoDePrueba {
+	t.Helper()
+	if os.Getenv("REDIS_URL") == "" {
+		t.Skip("REDIS_URL no está definido: se omite el test del guardián de perímetro real de verificar_otp (ADR 0018)")
+	}
+	return nuevoServidorAccesoInterno(t, pool, true)
+}
+
+func nuevoServidorAccesoInterno(t *testing.T, pool *pgxpool.Pool, confianzaReal bool) servidorAccesoDePrueba {
 	t.Helper()
 
 	relojReal := reloj.NuevoReal()
@@ -197,7 +240,29 @@ func nuevoServidorAcceso(t *testing.T, pool *pgxpool.Pool) *fiber.App {
 		listaRevocacion = accesoredis.NuevaListaRevocacionNoOp()
 	}
 
-	evaluadorConfianzaAcceso := accesoconfianza.NuevoEvaluadorConfianzaNoOp(loggerSilencioso)
+	// evaluadorConfianzaAcceso: no-op por defecto (mismo criterio que
+	// nuevoServidorIdentidad, ver comentario de cabecera), o
+	// accesoconfianza.EvaluadorConfianzaReal sobre Redis real cuando
+	// confianzaReal==true (nuevoServidorAccesoConConfianzaReal) — mismo
+	// ensamblaje que construirEvaluadorConfianza en cmd/api/main.go: un
+	// LimitadorTasa real sobre Redis + VerificadorCaptcha en modo fail-open
+	// de desarrollo (sin secretKey, entornoApp != "production"). Ningún
+	// endpoint de este paquete envía TokenCaptcha, así que el captcha nunca
+	// llega a evaluarse de verdad.
+	var evaluadorConfianzaAcceso accesopuertos.EvaluadorConfianza
+	if confianzaReal {
+		clienteRedisCrudo, err := cache.NuevoClienteRedis(mustRedisURL(t))
+		if err != nil {
+			t.Fatalf("NuevoClienteRedis() (confianza real): %v", err)
+		}
+		t.Cleanup(func() { _ = clienteRedisCrudo.Close() })
+		limitador := confianzaredis.NuevoLimitadorTasa(clienteRedisCrudo)
+		verificadorCaptcha := turnstile.NuevoVerificadorCaptcha("", "", "development")
+		evaluarTrustSignal := confianzaaplicacion.NuevoEvaluarTrustSignalCasoDeUso(limitador, verificadorCaptcha)
+		evaluadorConfianzaAcceso = accesoconfianza.NuevoEvaluadorConfianzaReal(confianzapuertos.EvaluadorDeRiesgo(evaluarTrustSignal))
+	} else {
+		evaluadorConfianzaAcceso = accesoconfianza.NuevoEvaluadorConfianzaNoOp(loggerSilencioso)
+	}
 
 	autenticadorACL := accesoidentidad.NuevoAutenticadorIdentidad(autenticadorIdentidad)
 	consultorEstadoSujeto := accesoidentidad.NuevoConsultorEstadoSujeto(consultorIdentidad)
@@ -231,7 +296,7 @@ func nuevoServidorAcceso(t *testing.T, pool *pgxpool.Pool) *fiber.App {
 	app := fiber.New(fiber.Config{DisableStartupMessage: true})
 	accesohttp.RegistrarRutas(app, manejadorAcceso, validador)
 	identidadhttp.RegistrarRutas(app, manejadorIdentidad, validador)
-	return app
+	return servidorAccesoDePrueba{App: app, EmisorStepUp: emisorStepUp}
 }
 
 // redisDisponible/mustRedisURL: mismo criterio que
@@ -344,7 +409,7 @@ func iniciarSesionDePrueba(t *testing.T, app *fiber.App, correo string) resultad
 func TestAcceso_LoginCompleto_EmiteJWTValidoYRefresco(t *testing.T) {
 	pool := poolAplicacion(t)
 	dueno := poolDueno(t)
-	app := nuevoServidorAcceso(t, pool)
+	app := nuevoServidorAcceso(t, pool).App
 
 	idUsuario, correo := usuarioActivoDePrueba(t, app, dueno, "login")
 	t.Cleanup(func() { borrarUsuario(t, dueno, idUsuario) })
@@ -394,7 +459,7 @@ func TestAcceso_LoginCompleto_EmiteJWTValidoYRefresco(t *testing.T) {
 func TestAcceso_Renovacion_RotaElTokenYElAnteriorDejaDeServir(t *testing.T) {
 	pool := poolAplicacion(t)
 	dueno := poolDueno(t)
-	app := nuevoServidorAcceso(t, pool)
+	app := nuevoServidorAcceso(t, pool).App
 
 	idUsuario, correo := usuarioActivoDePrueba(t, app, dueno, "renovacion")
 	t.Cleanup(func() { borrarUsuario(t, dueno, idUsuario) })
@@ -434,7 +499,7 @@ func TestAcceso_Renovacion_RotaElTokenYElAnteriorDejaDeServir(t *testing.T) {
 func TestAcceso_ReusoDeRefresco_RevocaLaSesion(t *testing.T) {
 	pool := poolAplicacion(t)
 	dueno := poolDueno(t)
-	app := nuevoServidorAcceso(t, pool)
+	app := nuevoServidorAcceso(t, pool).App
 
 	idUsuario, correo := usuarioActivoDePrueba(t, app, dueno, "reuso")
 	t.Cleanup(func() { borrarUsuario(t, dueno, idUsuario) })
@@ -488,7 +553,7 @@ func TestAcceso_ReusoDeRefresco_RevocaLaSesion(t *testing.T) {
 func TestAcceso_JWKS_SirveLaLlavePublicaCorrecta(t *testing.T) {
 	pool := poolAplicacion(t)
 	dueno := poolDueno(t)
-	app := nuevoServidorAcceso(t, pool)
+	app := nuevoServidorAcceso(t, pool).App
 
 	idUsuario, correo := usuarioActivoDePrueba(t, app, dueno, "jwks")
 	t.Cleanup(func() { borrarUsuario(t, dueno, idUsuario) })
@@ -534,7 +599,7 @@ func TestAcceso_JWKS_SirveLaLlavePublicaCorrecta(t *testing.T) {
 func TestAcceso_Logout_RevocaLaSesion(t *testing.T) {
 	pool := poolAplicacion(t)
 	dueno := poolDueno(t)
-	app := nuevoServidorAcceso(t, pool)
+	app := nuevoServidorAcceso(t, pool).App
 
 	idUsuario, correo := usuarioActivoDePrueba(t, app, dueno, "logout")
 	t.Cleanup(func() { borrarUsuario(t, dueno, idUsuario) })
@@ -672,7 +737,7 @@ func jwtClaims(t *testing.T, tokenCompacto string) map[string]any {
 func TestAcceso_LoginConMFA_FlujoCompleto(t *testing.T) {
 	pool := poolAplicacion(t)
 	dueno := poolDueno(t)
-	app := nuevoServidorAcceso(t, pool)
+	app := nuevoServidorAcceso(t, pool).App
 
 	idUsuario, correo := usuarioActivoDePrueba(t, app, dueno, "mfa")
 	t.Cleanup(func() { borrarUsuario(t, dueno, idUsuario) })
