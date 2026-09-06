@@ -31,6 +31,26 @@ estas 9 acciones — `usuario.login` absorbe los tres eventos de intento de
 autenticación porque son la misma acción de negocio con distinto
 desenlace, no acciones distintas.
 
+### MFA/OTP (docs/design/otp-mfa.md)
+
+| Acción | Recurso | Descripción | Evento de dominio | Valores de `resultado` |
+|---|---|---|---|---|
+| `usuario.mfa_habilitado` | `usuario` | Generación de un secreto TOTP nuevo y creación del `FactorMFA` sin confirmar todavía. | `FactorMFAHabilitado` | `exito` |
+| `usuario.mfa_confirmado` | `usuario` | Primer código TOTP correcto: el `FactorMFA` queda confirmado y `Usuario.tieneMFA` pasa a `true` (INV-ID-08/INV-MFA-01). | `FactorMFAConfirmado` | `exito` |
+| `usuario.mfa_deshabilitado` | `usuario` | El usuario desactivó su segundo factor, tras demostrar posesión con un código propio (ADR 0039). | `FactorMFADeshabilitado` | `exito` |
+| `usuario.codigo_respaldo_consumido` | `usuario` | Un código de respaldo de un solo uso se consumió con éxito durante la verificación OTP; permite que el usuario vea en su historial cuántos le quedan. | `CodigoRespaldoConsumido` | `exito` |
+| `usuario.otp_verificacion_fallida` | `usuario` | Un código presentado en el flujo de step-up no coincidió ni con el TOTP esperado ni con ningún código de respaldo disponible — señal de fuerza bruta sobre el segundo factor (mismo criterio que `autorizacion.denegada` de Tenencia). | `VerificacionOTPFallida` | `fallo` |
+
+5 eventos de dominio (`internal/identidad/dominio/eventos.go`) mapean 1:1 a
+estas 5 acciones. Van dentro de "Contexto Identidad" (no una sección
+propia) porque MFA/OTP es una extensión de Identidad, no un bounded
+context nuevo (§0.1 de `docs/design/otp-mfa.md`). Sembradas por la
+migración `db/migraciones/000016_acciones_auditoria_mfa.up.sql`, separada
+de `000015_crear_factores_mfa.up.sql` (que solo crea las tablas) siguiendo
+el mismo criterio que ya usaron Acceso (000006/000007) y Tenencia
+(000009/000012): el catálogo de acciones no depende de las tablas de
+dominio del propio contexto.
+
 ## Agregar una acción nueva
 
 1. Migración nueva (`NNNNNN_agregar_accion_x.up/down.sql`) que haga
