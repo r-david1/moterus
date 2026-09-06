@@ -107,25 +107,14 @@ func (c *DeshabilitarMFACasoDeUso) Deshabilitar(ctx context.Context, cmd puertos
 		return &dominio.ErrUsuarioNoEncontrado{IDUsuario: cmd.IDSujeto}
 	}
 
-	// GAP DE PUERTO (reportado, no resuelto en silencio): RepositorioFactoresMFA
-	// no expone ningún método para eliminar o desactivar de forma persistente
-	// un FactorMFA (solo Guardar/BuscarPorID/BuscarConfirmadosDeUsuario/
-	// ContarConfirmadosDeUsuario), y dominio.FactorMFA tampoco tiene un campo
-	// que Deshabilitar() pueda voltear (Confirmado() se queda en true para
-	// siempre; Deshabilitar() solo acumula el evento de auditoría). Además la
-	// migración 000015 revoca DELETE sobre factores_mfa al rol de la app, así
-	// que ni siquiera un futuro RepositorioFactoresMFA.Eliminar podría hacer
-	// un DELETE físico: haría falta una columna persistida de estado (p. ej.
-	// "habilitado"/"eliminado_en") que hoy no existe en el dominio ni en la
-	// migración. Se llama Guardar aquí, replicando el patrón de
-	// "mutar + guardar" del resto del sistema, para que el evento de
-	// auditoría quede registrado y el flip de Usuario.tieneMFA se persista,
-	// pero ADVERTENCIA: sin esa pieza adicional del puerto/dominio, el
-	// FactorMFA queda persistido igual que antes (confirmado=true, mismo
-	// secreto), así que un ContarConfirmadosDeUsuario posterior seguiría
-	// contándolo y HabilitarMFA seguiría rechazando un nuevo factor con
-	// ErrLimiteFactoresMFAExcedido. Esto se reporta explícitamente para que
-	// quien posea identidad/puertos y el adaptador Postgres lo resuelva.
+	// FactorMFA.Deshabilitar pone EstaActivo()=false (EstaConfirmado() se
+	// queda en true para siempre, es un hecho histórico) — Guardar persiste
+	// ese cambio como cualquier otra mutación, sin necesitar DELETE ni un
+	// método nuevo del puerto. Es lo que hace que un ContarConfirmadosDeUsuario
+	// posterior ya no cuente este factor, permitiendo un HabilitarMFA nuevo.
+	// La migración que implemente RepositorioFactoresMFA (fase de
+	// infraestructura, todavía no escrita) necesita una columna "activo"
+	// junto a "confirmado" para que esto funcione en Postgres.
 	factorElegido.Deshabilitar(ahora)
 	usuario.DeshabilitarMFA(ahora)
 

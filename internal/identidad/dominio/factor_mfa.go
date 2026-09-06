@@ -19,6 +19,7 @@ type FactorMFA struct {
 	tipo            TipoFactor
 	secretoCifrado  SecretoTOTPCifrado
 	confirmado      bool
+	activo          bool
 	creadoEn        time.Time
 	confirmadoEn    *time.Time
 	codigosRespaldo []CodigoRespaldoMFA
@@ -56,6 +57,7 @@ func HabilitarFactorMFA(
 		tipo:           tipo,
 		secretoCifrado: secretoCifrado,
 		confirmado:     false,
+		activo:         true,
 		creadoEn:       ahora,
 	}
 	f.agregarEvento(NuevoFactorMFAHabilitado(usuarioID, id, ahora))
@@ -65,13 +67,19 @@ func HabilitarFactorMFA(
 // ReconstituirFactorMFA reconstruye un agregado FactorMFA a partir de datos
 // ya validados y persistidos. A diferencia de HabilitarFactorMFA, no
 // acumula eventos: no representa una operación de negocio nueva, sino la
-// rehidratación de una ya ocurrida.
+// rehidratación de una ya ocurrida. activo distingue "confirmado alguna
+// vez" (confirmado, que nunca vuelve a false: es un hecho histórico) de
+// "vigente ahora mismo" (activo, que Deshabilitar pone en false) — sin
+// esta segunda bandera, un factor deshabilitado seguiría contando para
+// RepositorioFactoresMFA.ContarConfirmadosDeUsuario y bloquearía para
+// siempre un HabilitarMFA posterior (ErrLimiteFactoresMFAExcedido).
 func ReconstituirFactorMFA(
 	id IDFactorMFA,
 	usuarioID IDUsuario,
 	tipo TipoFactor,
 	secretoCifrado SecretoTOTPCifrado,
 	confirmado bool,
+	activo bool,
 	creadoEn time.Time,
 	confirmadoEn *time.Time,
 	codigosRespaldo []CodigoRespaldoMFA,
@@ -82,6 +90,7 @@ func ReconstituirFactorMFA(
 		tipo:           tipo,
 		secretoCifrado: secretoCifrado,
 		confirmado:     confirmado,
+		activo:         activo,
 		creadoEn:       creadoEn,
 	}
 	if confirmadoEn != nil {
@@ -110,8 +119,19 @@ func (f *FactorMFA) Tipo() TipoFactor { return f.tipo }
 func (f *FactorMFA) SecretoCifrado() SecretoTOTPCifrado { return f.secretoCifrado }
 
 // EstaConfirmado indica si el factor ya pasó su primera verificación
-// exitosa (INV-MFA-01).
+// exitosa alguna vez (INV-MFA-01). Es un hecho histórico: sigue en true
+// aunque el factor se haya deshabilitado después — para saber si sigue
+// vigente, ver EstaActivo.
 func (f *FactorMFA) EstaConfirmado() bool { return f.confirmado }
+
+// EstaActivo indica si el factor sigue vigente ahora mismo. Empieza en
+// true al habilitarlo y pasa a false cuando Deshabilitar se ejecuta; a
+// diferencia de EstaConfirmado, sí puede volver a false. Los repositorios
+// deben filtrar por confirmado Y activo al contar o listar los factores
+// que cuentan para INV-ID-08/INV-MFA-01 y para el límite de un factor por
+// usuario del MVP (ADR 0037): sin este campo, un factor deshabilitado
+// seguiría bloqueando un HabilitarMFA posterior.
+func (f *FactorMFA) EstaActivo() bool { return f.activo }
 
 // CreadoEn devuelve la marca de tiempo de creación del factor.
 func (f *FactorMFA) CreadoEn() time.Time { return f.creadoEn }
@@ -248,13 +268,16 @@ func (f *FactorMFA) consumirCodigoRespaldoSiCoincide(codigo string, ahora time.T
 	return false
 }
 
-// Deshabilitar acumula el evento FactorMFADeshabilitado (ADR 0039: el caso
-// de uso ya exigió y verificó un código propio del factor antes de llegar
-// aquí). No muta el estado interno más allá de registrar el evento: la
-// baja física (o el estado "eliminado") del registro persistido es
-// responsabilidad del adaptador de persistencia invocado por el caso de
-// uso DeshabilitarMFA, fuera del alcance de este agregado de dominio.
+// Deshabilitar marca el factor como no vigente (activo=false, ver
+// EstaActivo) y acumula el evento FactorMFADeshabilitado (ADR 0039: el
+// caso de uso ya exigió y verificó un código propio del factor antes de
+// llegar aquí). No hace un DELETE físico ni necesita uno: el adaptador de
+// persistencia solo tiene que guardar el agregado con Guardar, igual que
+// cualquier otra mutación — activo=false es lo que hace que
+// ContarConfirmadosDeUsuario deje de contarlo, permitiendo un HabilitarMFA
+// posterior.
 func (f *FactorMFA) Deshabilitar(ahora time.Time) {
+	f.activo = false
 	f.agregarEvento(NuevoFactorMFADeshabilitado(f.usuarioID, f.id, ahora))
 }
 

@@ -274,6 +274,6 @@ func factorConfirmadoDePrueba(t *testing.T, idFactor dominio.IDFactorMFA, idUsua
 	confirmadoEn := ahoraDePrueba()
 	return dominio.ReconstituirFactorMFA(
 		idFactor, idUsuario, dominio.TipoFactorTOTP, secretoCifradoDePrueba(t),
-		true, ahoraDePrueba(), &confirmadoEn, codigosRespaldo,
+		true, true, ahoraDePrueba(), &confirmadoEn, codigosRespaldo,
 	)
 }

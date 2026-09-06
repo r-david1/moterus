@@ -176,7 +176,13 @@ type AutorizadorDeConsultas interface {
 // --- MFA / OTP (sección 2.2 de docs/design/otp-mfa.md) ----------------------
 
 // RepositorioFactoresMFA es el puerto de salida para la persistencia del
-// agregado FactorMFA.
+// agregado FactorMFA. "Confirmados", en los dos métodos de abajo, significa
+// SIEMPRE "confirmado Y activo" (dominio.FactorMFA.EstaConfirmado() &&
+// EstaActivo()) — un factor deshabilitado sigue con EstaConfirmado()=true
+// para siempre (es un hecho histórico) pero deja de contar aquí, que es
+// justamente lo que permite un HabilitarMFA posterior tras deshabilitar el
+// anterior. La migración que implemente este puerto necesita una columna
+// "activo" (o equivalente) además de "confirmado", no solo esta última.
 type RepositorioFactoresMFA interface {
 	Guardar(ctx context.Context, f *dominio.FactorMFA) error
 	BuscarPorID(ctx context.Context, id dominio.IDFactorMFA) (*dominio.FactorMFA, error)

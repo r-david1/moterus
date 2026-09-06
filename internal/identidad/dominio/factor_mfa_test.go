@@ -329,11 +329,20 @@ func TestINV_MFA_08_VerificarCodigo_RespuestaIndistinguible(t *testing.T) {
 
 func TestFactorMFA_Deshabilitar_EmiteEvento(t *testing.T) {
 	f, _, ahora := factorConfirmadoDePrueba(t)
+	if !f.EstaActivo() {
+		t.Fatal("precondición: un factor recién confirmado debe estar activo")
+	}
 	f.Deshabilitar(ahora)
 
 	eventos := f.EventosPendientes()
 	if len(eventos) != 1 || eventos[0].NombreEvento() != "FactorMFADeshabilitado" {
 		t.Fatalf("se esperaba 1 evento FactorMFADeshabilitado, obtuvo %v", eventos)
+	}
+	if f.EstaActivo() {
+		t.Error("Deshabilitar debe poner EstaActivo() en false")
+	}
+	if !f.EstaConfirmado() {
+		t.Error("Deshabilitar no debe afectar EstaConfirmado (hecho histórico)")
 	}
 }
 
@@ -346,10 +355,13 @@ func TestReconstituirFactorMFA(t *testing.T) {
 	hash, _ := NuevoHashCodigoRespaldo(strings.Repeat("a", 64))
 	codigos := []CodigoRespaldoMFA{ReconstituirCodigoRespaldoMFA(hash, nil)}
 
-	f := ReconstituirFactorMFA(id, usuarioID, TipoFactorTOTP, cifrado, true, creadoEn, &confirmadoEn, codigos)
+	f := ReconstituirFactorMFA(id, usuarioID, TipoFactorTOTP, cifrado, true, true, creadoEn, &confirmadoEn, codigos)
 
 	if !f.EstaConfirmado() {
 		t.Error("debe reconstituirse como confirmado")
+	}
+	if !f.EstaActivo() {
+		t.Error("debe reconstituirse como activo cuando el parámetro activo es true")
 	}
 	got, tiene := f.ConfirmadoEn()
 	if !tiene || !got.Equal(confirmadoEn) {
@@ -360,6 +372,26 @@ func TestReconstituirFactorMFA(t *testing.T) {
 	}
 	if len(f.EventosPendientes()) != 0 {
 		t.Error("ReconstituirFactorMFA no debe acumular eventos: no es una operación de negocio nueva")
+	}
+}
+
+// TestReconstituirFactorMFA_ActivoFalse cubre el caso de un factor
+// confirmado alguna vez pero ya deshabilitado (INV-MFA-01 §EstaActivo):
+// EstaConfirmado sigue en true (hecho histórico), EstaActivo en false.
+func TestReconstituirFactorMFA_ActivoFalse(t *testing.T) {
+	id := idFactorDePrueba(t)
+	usuarioID := idDePrueba(t)
+	_, cifrado := secretoFactorDePrueba(t)
+	creadoEn := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	confirmadoEn := creadoEn.Add(time.Minute)
+
+	f := ReconstituirFactorMFA(id, usuarioID, TipoFactorTOTP, cifrado, true, false, creadoEn, &confirmadoEn, nil)
+
+	if !f.EstaConfirmado() {
+		t.Error("EstaConfirmado debe seguir en true: es un hecho histórico, no lo revierte Deshabilitar")
+	}
+	if f.EstaActivo() {
+		t.Error("EstaActivo debe ser false cuando se reconstituye como deshabilitado")
 	}
 }
 
