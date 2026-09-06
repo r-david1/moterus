@@ -107,7 +107,7 @@ func (c *HabilitarMFACasoDeUso) Habilitar(ctx context.Context, cmd puertos.Coman
 		return puertos.ResultadoHabilitarMFA{}, err
 	}
 
-	idFactor, err := c.nuevoIDFactorMFA()
+	idFactor, err := c.ids.NuevoIDFactorMFA()
 	if err != nil {
 		return puertos.ResultadoHabilitarMFA{}, err
 	}
@@ -151,26 +151,4 @@ func (c *HabilitarMFACasoDeUso) Habilitar(ctx context.Context, cmd puertos.Coman
 		SecretoEnClaro:      secretoPlano.Valor(),
 		URIProvisionamiento: secretoPlano.URIProvisionamiento(usuario.Correo(), emisorTOTP),
 	}, nil
-}
-
-// nuevoIDFactorMFA genera un identificador nuevo para un FactorMFA.
-//
-// GAP DE PUERTO (reportado, no resuelto en silencio): puertos.GeneradorIDs
-// (identidad/puertos/salida.go) solo expone NuevoIDUsuario(); no existe
-// NuevoIDFactorMFA(), pese a que el comentario de identificadores.go sobre
-// IDFactorMFA dice textualmente "la generación de IDs nuevos es
-// responsabilidad del puerto GeneradorIDs de infraestructura, igual que
-// IDUsuario" — es decir, el propio dominio da por hecho que ese método
-// existe. Como identidad/puertos está cerrado para este encargo, este
-// método reutiliza NuevoIDUsuario() únicamente como fuente de un UUIDv7
-// fresco (vía su representación en texto) y lo reenvuelve como
-// IDFactorMFA. Es un shim temporal, no una decisión de diseño: en cuanto
-// el puerto gane NuevoIDFactorMFA(), este método debe reemplazarse por una
-// llamada directa a c.ids.NuevoIDFactorMFA().
-func (c *HabilitarMFACasoDeUso) nuevoIDFactorMFA() (dominio.IDFactorMFA, error) {
-	crudo, err := c.ids.NuevoIDUsuario()
-	if err != nil {
-		return dominio.IDFactorMFA{}, err
-	}
-	return dominio.IDFactorMFADesde(crudo.String())
 }

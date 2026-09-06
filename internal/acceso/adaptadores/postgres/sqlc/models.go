@@ -78,6 +78,30 @@ type Auditorium struct {
 	HashActual string `json:"hash_actual"`
 }
 
+// VO CodigoRespaldoMFA dentro del agregado FactorMFA (ADR 0040): 10 filas por factor confirmado, generadas junto con la confirmacion, nunca antes.
+type CodigosRespaldoMfa struct {
+	ID       pgtype.UUID `json:"id"`
+	FactorID pgtype.UUID `json:"factor_id"`
+	// SHA-256 hex del codigo de respaldo. El valor en claro NUNCA se persiste (solo se muestra una vez, en la respuesta de ConfirmarFactorMFA).
+	HashCodigo string             `json:"hash_codigo"`
+	UsadoEn    pgtype.Timestamptz `json:"usado_en"`
+}
+
+// Agregado FactorMFA (contexto Identidad, docs/design/otp-mfa.md). id generado por la aplicacion.
+type FactoresMfa struct {
+	ID        pgtype.UUID `json:"id"`
+	UsuarioID pgtype.UUID `json:"usuario_id"`
+	Tipo      string      `json:"tipo"`
+	// Secreto TOTP CIFRADO (AES-256-GCM, CifradorSecretos) — reversible, nunca un hash (INV-MFA-02). El secreto en claro nunca se persiste.
+	SecretoCifrado []byte `json:"secreto_cifrado"`
+	// Hecho historico: true desde la primera verificacion exitosa, nunca vuelve a false. No confundir con activo.
+	Confirmado bool `json:"confirmado"`
+	// Estado vigente: true al habilitar, false tras Deshabilitar. "Confirmado" a efectos de INV-MFA-01/limite del MVP significa confirmado=true AND activo=true (ver puertos/salida.go).
+	Activo       bool               `json:"activo"`
+	CreadoEn     pgtype.Timestamptz `json:"creado_en"`
+	ConfirmadoEn pgtype.Timestamptz `json:"confirmado_en"`
+}
+
 // Agregado Invitacion (contexto Tenencia). Nunca se borra fisicamente: transiciona a un estado terminal (aceptada/revocada/expirada) que se conserva como evidencia de auditoria.
 type Invitacione struct {
 	ID                 pgtype.UUID        `json:"id"`

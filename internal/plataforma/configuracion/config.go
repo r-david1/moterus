@@ -67,6 +67,16 @@ type Config struct {
 	// mismo formato que AccesoLlaveFirma. Se mantienen publicadas en el
 	// JWKS durante una ventana de rotación (≥ vidaTokenAcceso).
 	AccesoLlavesVerificacionPrevias string
+	// IdentidadLlaveCifradoMFA es la llave simétrica AES-256-GCM (env
+	// IDENTIDAD_LLAVE_CIFRADO_MFA, docs/design/otp-mfa.md §2.2/ADR 0038)
+	// que identidad/adaptadores/cripto.CifradorSecretosAESGCM usa para
+	// cifrar/descifrar en reposo el secreto TOTP de cada FactorMFA: 32
+	// bytes en base64. Mismo criterio de gestión que ACCESO_LLAVE_FIRMA:
+	// sin ella en APP_ENV=production el proceso no arranca; fuera de
+	// producción se genera una llave efímera en memoria con WARN explícito
+	// (los secretos MFA cifrados con ella quedan indescifrables al
+	// reiniciar el proceso).
+	IdentidadLlaveCifradoMFA string
 }
 
 // CargarDesdeEntorno construye un Config leyendo variables de entorno,
@@ -90,6 +100,7 @@ func CargarDesdeEntorno() (Config, error) {
 		AccesoAudiencia:                 os.Getenv("ACCESO_AUDIENCIA"),
 		AccesoLlaveFirma:                os.Getenv("ACCESO_LLAVE_FIRMA"),
 		AccesoLlavesVerificacionPrevias: os.Getenv("ACCESO_LLAVES_VERIFICACION_PREVIAS"),
+		IdentidadLlaveCifradoMFA:        os.Getenv("IDENTIDAD_LLAVE_CIFRADO_MFA"),
 	}, nil
 }
 

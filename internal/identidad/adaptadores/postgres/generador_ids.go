@@ -28,3 +28,14 @@ func (GeneradorIDs) NuevoIDUsuario() (dominio.IDUsuario, error) {
 	}
 	return dominio.IDUsuarioDesde(crudo)
 }
+
+// NuevoIDFactorMFA genera un UUIDv7 nuevo y lo envuelve como
+// dominio.IDFactorMFA (docs/design/otp-mfa.md §1.4, ADR 0037: mismo
+// criterio de ordenabilidad temporal que IDUsuario).
+func (GeneradorIDs) NuevoIDFactorMFA() (dominio.IDFactorMFA, error) {
+	crudo, err := ids.GenerarUUIDv7()
+	if err != nil {
+		return dominio.IDFactorMFA{}, err
+	}
+	return dominio.IDFactorMFADesde(crudo)
+}

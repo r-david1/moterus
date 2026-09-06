@@ -44,6 +44,30 @@ type IniciarSesionOutput struct {
 	Body resultadoSesionRespuesta
 }
 
+// --- POST /acceso/sesiones/segundo-factor (completar login con MFA) --------
+
+// completarSegundoFactorPeticion es el cuerpo de la solicitud (§3.6 del
+// diseño otp-mfa.md): el token de step-up recibido en el 401 de
+// POST /acceso/sesiones y el código OTP (TOTP o de respaldo) presentado por
+// el usuario. Sin credencial Bearer: el propio token de step-up es la
+// credencial de este endpoint (INV-MFA-03, distinto de un token de acceso
+// normal).
+type completarSegundoFactorPeticion struct {
+	TokenStepUp string `json:"token_step_up" minLength:"1" doc:"Token de step-up devuelto por POST /acceso/sesiones cuando exige un segundo factor."`
+	Codigo      string `json:"codigo" minLength:"6" maxLength:"10" doc:"Código TOTP (6 dígitos) o de respaldo (10 caracteres)." example:"123456"`
+}
+
+// CompletarSegundoFactorInput es el input Huma del paso 2 del login con MFA.
+type CompletarSegundoFactorInput struct {
+	Body completarSegundoFactorPeticion
+}
+
+// CompletarSegundoFactorOutput es el output Huma: la misma sesión completa
+// que emite el login normal, con amr=["pwd","otp"] (§3.6 del diseño).
+type CompletarSegundoFactorOutput struct {
+	Body resultadoSesionRespuesta
+}
+
 // --- POST /acceso/sesiones/renovaciones (rotación de refresco) -------------
 
 type renovarSesionPeticion struct {

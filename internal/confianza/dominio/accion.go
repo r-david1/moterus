@@ -33,4 +33,14 @@ const (
 	AccionCrearOrganizacion Accion = "crear_organizacion"
 	AccionInvitarMiembro    Accion = "invitar_miembro"
 	AccionAceptarInvitacion Accion = "aceptar_invitacion"
+	// AccionVerificarOTP es la acción que agrega la extensión OTP/MFA
+	// (§3.6/§7 de docs/design/otp-mfa.md): el paso de step-up del login,
+	// evaluado por CompletarSegundoFactorCasoDeUso (acceso/aplicacion) con
+	// clave por usuario — un oráculo de fuerza bruta clásico sobre un
+	// código de 6 dígitos (10^6 combinaciones), de ahí el umbral agresivo
+	// en PoliticaLimitesPorDefecto. acceso/aplicacion no importa este
+	// paquete (mismo criterio que AccionRenovacionSesion/
+	// AccionCierreMasivoSesiones): usa el literal "verificar_otp", que debe
+	// coincidir textualmente con este valor.
+	AccionVerificarOTP Accion = "verificar_otp"
 )

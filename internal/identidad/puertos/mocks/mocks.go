@@ -156,7 +156,8 @@ func (m *Reloj) Ahora() time.Time {
 
 // GeneradorIDs es el test double de puertos.GeneradorIDs.
 type GeneradorIDs struct {
-	FnNuevoIDUsuario func() (dominio.IDUsuario, error)
+	FnNuevoIDUsuario   func() (dominio.IDUsuario, error)
+	FnNuevoIDFactorMFA func() (dominio.IDFactorMFA, error)
 }
 
 var _ puertos.GeneradorIDs = (*GeneradorIDs)(nil)
@@ -166,6 +167,13 @@ func (m *GeneradorIDs) NuevoIDUsuario() (dominio.IDUsuario, error) {
 		return m.FnNuevoIDUsuario()
 	}
 	return dominio.IDUsuario{}, nil
+}
+
+func (m *GeneradorIDs) NuevoIDFactorMFA() (dominio.IDFactorMFA, error) {
+	if m.FnNuevoIDFactorMFA != nil {
+		return m.FnNuevoIDFactorMFA()
+	}
+	return dominio.IDFactorMFA{}, nil
 }
 
 // --- UnidadDeTrabajo ------------------------------------------------------

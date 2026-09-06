@@ -49,9 +49,19 @@ type Reloj interface {
 }
 
 // GeneradorIDs es el puerto de salida para generar identificadores nuevos
-// de usuario. El dominio nunca genera UUIDs por sí mismo.
+// de usuario y de factor MFA. El dominio nunca genera UUIDs por sí mismo.
+//
+// NuevoIDFactorMFA se agregó junto con la extensión OTP/MFA
+// (docs/design/otp-mfa.md §1.4): dominio/identificadores.go ya documentaba,
+// desde antes de que este método existiera, que "la generación de IDs
+// nuevos es responsabilidad del puerto GeneradorIDs de infraestructura,
+// igual que IDUsuario" — es decir, el propio dominio daba por hecho que
+// este método iba a existir. HabilitarMFACasoDeUso (aplicacion/
+// habilitar_mfa.go) lo consume directamente; antes de que este método
+// existiera usaba un shim temporal sobre NuevoIDUsuario, ya eliminado.
 type GeneradorIDs interface {
 	NuevoIDUsuario() (dominio.IDUsuario, error)
+	NuevoIDFactorMFA() (dominio.IDFactorMFA, error)
 }
 
 // UnidadDeTrabajo es el puerto de salida que agrupa la escritura de negocio

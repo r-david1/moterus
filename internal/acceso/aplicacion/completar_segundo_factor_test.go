@@ -12,10 +12,8 @@ import (
 )
 
 // verificadorSegundoFactorDePrueba es un test double manual de
-// aplicacion.VerificadorSegundoFactor (una interfaz de consumidor definida
-// en acceso/aplicacion, no en puertos: ver el comentario de
-// completar_segundo_factor.go sobre por qué debería vivir en
-// acceso/puertos/salida.go).
+// puertos.VerificadorSegundoFactor (movida a acceso/puertos/salida.go,
+// junto a AutenticadorIdentidad/ConsultorEstadoSujeto).
 type verificadorSegundoFactorDePrueba struct {
 	fnVerificar func(ctx context.Context, idUsuario, codigo string, origen dominio.OrigenSolicitud) (bool, error)
 

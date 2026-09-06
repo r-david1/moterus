@@ -10,14 +10,20 @@ package integracion
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha1" //nolint:gosec // TOTP (RFC 6238) exige SHA-1; ver identidad/dominio/totp.go.
+	"encoding/base32"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -34,7 +40,6 @@ import (
 	accesoaplicacion "github.com/r-david1/moterus/internal/acceso/aplicacion"
 	accesodominio "github.com/r-david1/moterus/internal/acceso/dominio"
 	accesopuertos "github.com/r-david1/moterus/internal/acceso/puertos"
-	accesomocks "github.com/r-david1/moterus/internal/acceso/puertos/mocks"
 
 	"github.com/r-david1/moterus/internal/identidad/adaptadores/auditoria"
 	identidadconfianza "github.com/r-david1/moterus/internal/identidad/adaptadores/confianza"
@@ -44,10 +49,34 @@ import (
 	"github.com/r-david1/moterus/internal/identidad/adaptadores/notificaciones"
 	identidadpostgres "github.com/r-david1/moterus/internal/identidad/adaptadores/postgres"
 	"github.com/r-david1/moterus/internal/identidad/aplicacion"
+	identidadpuertos "github.com/r-david1/moterus/internal/identidad/puertos"
 
 	"github.com/r-david1/moterus/internal/plataforma/cache"
 	"github.com/r-david1/moterus/internal/plataforma/reloj"
 )
+
+// gestorMFACompuestoDePrueba es el mismo adaptador de composición que
+// cmd/api/main.go#gestorMFACompuesto (identidad/puertos.GestorDeMFA agrupa
+// tres operaciones en una sola interfaz de puerto, pero cada caso de uso de
+// aplicacion implementa solo una), reproducido aquí porque el tipo de
+// producción no está exportado.
+type gestorMFACompuestoDePrueba struct {
+	habilitar    *aplicacion.HabilitarMFACasoDeUso
+	confirmar    *aplicacion.ConfirmarFactorMFACasoDeUso
+	deshabilitar *aplicacion.DeshabilitarMFACasoDeUso
+}
+
+func (g gestorMFACompuestoDePrueba) Habilitar(ctx context.Context, cmd identidadpuertos.ComandoHabilitarMFA) (identidadpuertos.ResultadoHabilitarMFA, error) {
+	return g.habilitar.Habilitar(ctx, cmd)
+}
+
+func (g gestorMFACompuestoDePrueba) ConfirmarFactor(ctx context.Context, cmd identidadpuertos.ComandoConfirmarFactorMFA) (identidadpuertos.ResultadoConfirmarMFA, error) {
+	return g.confirmar.ConfirmarFactor(ctx, cmd)
+}
+
+func (g gestorMFACompuestoDePrueba) Deshabilitar(ctx context.Context, cmd identidadpuertos.ComandoDeshabilitarMFA) error {
+	return g.deshabilitar.Deshabilitar(ctx, cmd)
+}
 
 // --- ensamblaje del servidor bajo prueba (Identidad + Acceso) ---------------
 
@@ -97,8 +126,43 @@ func nuevoServidorAcceso(t *testing.T, pool *pgxpool.Pool) *fiber.App {
 	reenviadorVerificacion := aplicacion.NuevoReenviarVerificacionCasoDeUso(
 		repositorioUsuarios, generadorTokensIdentidad, repositorioTokensVerificacion, notificadorCorreo, relojReal,
 	)
+
+	// --- Identidad: OTP/MFA (docs/design/otp-mfa.md), mismo cableado que
+	// cmd/api/main.go#montarIdentidadYAcceso: llave de cifrado AES-256
+	// efímera (nunca la misma entre tests) y los cuatro casos de uso nuevos.
+	repositorioFactoresMFA := identidadpostgres.NuevoRepositorioFactoresMFA(pool)
+	generadorTOTP := cripto.NuevoGeneradorTOTP()
+	llaveCifradoMFA, err := cripto.GenerarLlaveCifradoMFAEfimera()
+	if err != nil {
+		t.Fatalf("GenerarLlaveCifradoMFAEfimera(): %v", err)
+	}
+	llaveCifradoMFACruda, err := cripto.DecodificarLlaveCifradoMFA(llaveCifradoMFA)
+	if err != nil {
+		t.Fatalf("DecodificarLlaveCifradoMFA(): %v", err)
+	}
+	cifradorSecretosMFA, err := cripto.NuevoCifradorSecretosAESGCM(llaveCifradoMFACruda)
+	if err != nil {
+		t.Fatalf("NuevoCifradorSecretosAESGCM(): %v", err)
+	}
+	habilitarMFA := aplicacion.NuevoHabilitarMFACasoDeUso(
+		repositorioUsuarios, repositorioFactoresMFA, generadorTOTP, cifradorSecretosMFA,
+		registroAuditoriaIdentidad, publicadorEventosIdentidad, relojReal, generadorIDsIdentidad, unidadDeTrabajoIdentidad,
+	)
+	confirmarFactorMFA := aplicacion.NuevoConfirmarFactorMFACasoDeUso(
+		repositorioUsuarios, repositorioFactoresMFA, generadorTOTP, cifradorSecretosMFA,
+		registroAuditoriaIdentidad, publicadorEventosIdentidad, relojReal, unidadDeTrabajoIdentidad,
+	)
+	deshabilitarMFA := aplicacion.NuevoDeshabilitarMFACasoDeUso(
+		repositorioUsuarios, repositorioFactoresMFA, cifradorSecretosMFA,
+		registroAuditoriaIdentidad, publicadorEventosIdentidad, relojReal, unidadDeTrabajoIdentidad,
+	)
+	verificarOTP := aplicacion.NuevoVerificarOTPCasoDeUso(
+		repositorioFactoresMFA, cifradorSecretosMFA, registroAuditoriaIdentidad, relojReal, unidadDeTrabajoIdentidad,
+	)
+	gestorMFA := gestorMFACompuestoDePrueba{habilitar: habilitarMFA, confirmar: confirmarFactorMFA, deshabilitar: deshabilitarMFA}
+
 	manejadorIdentidad := identidadhttp.NuevoManejadorIdentidad(
-		registrador, autenticadorIdentidad, consultorIdentidad, verificadorCorreo, reenviadorVerificacion, evaluadorConfianzaIdentidad, nil,
+		registrador, autenticadorIdentidad, consultorIdentidad, verificadorCorreo, reenviadorVerificacion, evaluadorConfianzaIdentidad, nil, gestorMFA,
 	)
 
 	// --- Acceso --------------------------------------------------------------
@@ -137,17 +201,18 @@ func nuevoServidorAcceso(t *testing.T, pool *pgxpool.Pool) *fiber.App {
 
 	autenticadorACL := accesoidentidad.NuevoAutenticadorIdentidad(autenticadorIdentidad)
 	consultorEstadoSujeto := accesoidentidad.NuevoConsultorEstadoSujeto(consultorIdentidad)
+	verificadorSegundoFactorACL := accesoidentidad.NuevoVerificadorOTP(verificarOTP)
 
-	// emisorStepUp: el adaptador real de EmisorTokenStepUp (ADR 0038) todavía
-	// no existe (trabajo de infraestructura pendiente, fuera del alcance de
-	// este cambio). Ninguno de los tests de este archivo ejercita el flujo de
-	// step-up/MFA todavía, así que el mock por defecto (que nunca falla)
-	// basta para no romper el resto de la batería.
+	// emisorStepUp: adaptador real (ADR 0038), mismo Llavero que Firmador ya
+	// construyó arriba — permite ejercitar el flujo de step-up/MFA de punta
+	// a punta contra Postgres real (ver TestAcceso_LoginConMFA_FlujoCompleto).
+	emisorStepUp := accesojwt.NuevoEmisorTokenStepUp(llavero, politica.ToleranciaReloj())
+
 	iniciador := accesoaplicacion.NuevoIniciarSesionCasoDeUso(
 		autenticadorACL, sesiones, generadorRefrescos, firmador, listaRevocacion,
 		registroAuditoria, publicadorEventos, relojReal, generadorIDs, uow, politica,
 		"https://acceso.test.moterus.local", "moterus-test",
-		&accesomocks.EmisorTokenStepUp{},
+		emisorStepUp,
 	)
 	renovador := accesoaplicacion.NuevoRenovarSesionCasoDeUso(
 		evaluadorConfianzaAcceso, sesiones, generadorRefrescos, firmador, consultorEstadoSujeto, listaRevocacion,
@@ -157,8 +222,11 @@ func nuevoServidorAcceso(t *testing.T, pool *pgxpool.Pool) *fiber.App {
 	validador := accesoaplicacion.NuevoValidarAccesoCasoDeUso(firmador, listaRevocacion, sesiones, registroAuditoria, relojReal)
 	cerrador := accesoaplicacion.NuevoCerrarSesionCasoDeUso(sesiones, evaluadorConfianzaAcceso, listaRevocacion, registroAuditoria, relojReal, uow, politica)
 	consultorSesiones := accesoaplicacion.NuevoListarSesionesCasoDeUso(sesiones)
+	completadorSegundoFactor := accesoaplicacion.NuevoCompletarSegundoFactorCasoDeUso(
+		emisorStepUp, evaluadorConfianzaAcceso, verificadorSegundoFactorACL, iniciador,
+	)
 
-	manejadorAcceso := accesohttp.NuevoManejadorAcceso(iniciador, renovador, cerrador, consultorSesiones, firmador)
+	manejadorAcceso := accesohttp.NuevoManejadorAcceso(iniciador, renovador, cerrador, consultorSesiones, firmador, completadorSegundoFactor)
 
 	app := fiber.New(fiber.Config{DisableStartupMessage: true})
 	accesohttp.RegistrarRutas(app, manejadorAcceso, validador)
@@ -221,6 +289,28 @@ func limpiarSesionesDeUsuario(t *testing.T, poolDueno *pgxpool.Pool, idUsuario s
 	}
 	if _, err := poolDueno.Exec(ctx, `DELETE FROM sesiones WHERE usuario_id = $1`, idUsuario); err != nil {
 		t.Logf("no se pudieron limpiar las sesiones de prueba del usuario %s: %v", idUsuario, err)
+	}
+}
+
+// limpiarFactoresMFADeUsuario borra (con el rol dueño: rol_aplicacion no
+// tiene DELETE sobre factores_mfa/codigos_respaldo_mfa a propósito,
+// migración 000015) los factores MFA de un usuario de prueba. Sin esto,
+// borrarUsuario fallaría con una violación de FK
+// (factores_mfa_usuario_id_fkey no tiene ON DELETE CASCADE) y el usuario de
+// prueba quedaría huérfano en la base entre corridas. Debe registrarse con
+// t.Cleanup DESPUÉS de borrarUsuario (t.Cleanup es LIFO: así esta limpieza
+// corre PRIMERO), mismo criterio que limpiarSesionesDeUsuario.
+func limpiarFactoresMFADeUsuario(t *testing.T, poolDueno *pgxpool.Pool, idUsuario string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := poolDueno.Exec(ctx,
+		`DELETE FROM codigos_respaldo_mfa WHERE factor_id IN (SELECT id FROM factores_mfa WHERE usuario_id = $1)`, idUsuario,
+	); err != nil {
+		t.Logf("no se pudieron limpiar los codigos_respaldo_mfa de prueba del usuario %s: %v", idUsuario, err)
+		return
+	}
+	if _, err := poolDueno.Exec(ctx, `DELETE FROM factores_mfa WHERE usuario_id = $1`, idUsuario); err != nil {
+		t.Logf("no se pudieron limpiar los factores_mfa de prueba del usuario %s: %v", idUsuario, err)
 	}
 }
 
@@ -503,4 +593,192 @@ func kidDelJWT(t *testing.T, tokenCompacto string) string {
 		t.Fatalf("la cabecera del JWT no tiene kid: %v", cabecera)
 	}
 	return kid
+}
+
+// --- helper TOTP de prueba (RFC 6238) ---------------------------------------
+//
+// Reimplementación deliberadamente independiente del algoritmo de
+// identidad/dominio/totp.go (VerificarCodigo/generarCodigoTOTP, ambas no
+// exportadas): un test de integración que reutilizara directamente la
+// función de producción no probaría nada — solo confirmaría que la
+// implementación coincide consigo misma. Mismo algoritmo (HMAC-SHA1,
+// paso de 30s, 6 dígitos), calculado aquí desde cero.
+func totpCodigoDePrueba(t *testing.T, secretoBase32 string, momento time.Time) string {
+	t.Helper()
+	clave, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(strings.ToUpper(secretoBase32))
+	if err != nil {
+		t.Fatalf("decodificando el secreto TOTP base32: %v", err)
+	}
+	contador := uint64(momento.Unix() / 30)
+	var contadorBytes [8]byte
+	binary.BigEndian.PutUint64(contadorBytes[:], contador)
+
+	mac := hmac.New(sha1.New, clave)
+	mac.Write(contadorBytes[:])
+	suma := mac.Sum(nil)
+
+	offset := suma[len(suma)-1] & 0x0f
+	codigoBinario := (uint32(suma[offset]&0x7f) << 24) |
+		(uint32(suma[offset+1]) << 16) |
+		(uint32(suma[offset+2]) << 8) |
+		uint32(suma[offset+3])
+	return fmt.Sprintf("%06d", codigoBinario%1_000_000)
+}
+
+// errorSegundoFactorRespuesta parsea el cuerpo RFC 9457 que
+// mapearErrorDominio produce para ErrSegundoFactorRequerido
+// (acceso/adaptadores/http/errores_http.go): motivo_step_up y token_step_up
+// viajan como huma.ErrorDetail.Message con el prefijo "clave: valor".
+type errorSegundoFactorRespuesta struct {
+	Status int `json:"status"`
+	Errors []struct {
+		Message string `json:"message"`
+	} `json:"errors"`
+}
+
+func (e errorSegundoFactorRespuesta) valor(clave string) string {
+	prefijo := clave + ": "
+	for _, det := range e.Errors {
+		if strings.HasPrefix(det.Message, prefijo) {
+			return strings.TrimPrefix(det.Message, prefijo)
+		}
+	}
+	return ""
+}
+
+// jwtClaims decodifica (sin verificar firma: es un test) el payload de un
+// JWT compacto.
+func jwtClaims(t *testing.T, tokenCompacto string) map[string]any {
+	t.Helper()
+	partes := strings.SplitN(tokenCompacto, ".", 3)
+	if len(partes) != 3 {
+		t.Fatalf("el token no tiene 3 segmentos: %q", tokenCompacto)
+	}
+	crudo, err := base64.RawURLEncoding.DecodeString(partes[1])
+	if err != nil {
+		t.Fatalf("decodificando el payload del JWT: %v", err)
+	}
+	var claims map[string]any
+	if err := json.Unmarshal(crudo, &claims); err != nil {
+		t.Fatalf("parseando el payload del JWT: %v", err)
+	}
+	return claims
+}
+
+// TestAcceso_LoginConMFA_FlujoCompleto ejercita de punta a punta el diseño
+// de docs/design/otp-mfa.md: habilitar MFA -> confirmar con un código TOTP
+// calculado a mano -> login que exige step-up (401 + token_step_up) ->
+// completar el segundo factor -> sesión completa con amr=["pwd","otp"].
+func TestAcceso_LoginConMFA_FlujoCompleto(t *testing.T) {
+	pool := poolAplicacion(t)
+	dueno := poolDueno(t)
+	app := nuevoServidorAcceso(t, pool)
+
+	idUsuario, correo := usuarioActivoDePrueba(t, app, dueno, "mfa")
+	t.Cleanup(func() { borrarUsuario(t, dueno, idUsuario) })
+	t.Cleanup(func() { limpiarSesionesDeUsuario(t, dueno, idUsuario) })
+	t.Cleanup(func() { limpiarFactoresMFADeUsuario(t, dueno, idUsuario) })
+
+	// 1. Login normal (sin MFA todavía) para obtener un Bearer con el que
+	// habilitar el factor.
+	sesionInicial := iniciarSesionDePrueba(t, app, correo)
+
+	// 2. Habilitar MFA: POST /identidad/usuarios/actual/factores-mfa.
+	var habilitado struct {
+		IDFactor            string `json:"id_factor"`
+		SecretoEnClaro      string `json:"secreto_en_claro"`
+		URIProvisionamiento string `json:"uri_provisionamiento"`
+	}
+	peticionHabilitar := peticionJSON(t, http.MethodPost, "/identidad/usuarios/actual/factores-mfa", nil)
+	peticionHabilitar.Header.Set("Authorization", "Bearer "+sesionInicial.TokenAcceso)
+	status := respuestaHTTP(t, app, peticionHabilitar, &habilitado)
+	if status != http.StatusOK {
+		t.Fatalf("habilitar MFA: status=%d", status)
+	}
+	if habilitado.SecretoEnClaro == "" || habilitado.IDFactor == "" {
+		t.Fatalf("habilitar MFA: respuesta incompleta: %+v", habilitado)
+	}
+
+	// 3. Confirmar con el primer código TOTP calculado a mano.
+	codigoConfirmacion := totpCodigoDePrueba(t, habilitado.SecretoEnClaro, time.Now())
+	var confirmado struct {
+		CodigosRespaldo []string `json:"codigos_respaldo"`
+	}
+	peticionConfirmar := peticionJSON(t, http.MethodPost, "/identidad/usuarios/actual/factores-mfa/confirmacion", map[string]any{
+		"id_factor": habilitado.IDFactor,
+		"codigo":    codigoConfirmacion,
+	})
+	peticionConfirmar.Header.Set("Authorization", "Bearer "+sesionInicial.TokenAcceso)
+	status = respuestaHTTP(t, app, peticionConfirmar, &confirmado)
+	if status != http.StatusOK {
+		t.Fatalf("confirmar factor MFA: status=%d", status)
+	}
+	if len(confirmado.CodigosRespaldo) != 10 {
+		t.Fatalf("confirmar factor MFA: se esperaban 10 códigos de respaldo, hubo %d", len(confirmado.CodigosRespaldo))
+	}
+
+	// 4. Login con MFA activo: debe rechazarse con 401 + token_step_up
+	// (INV-ACC-03: ninguna sesión completa se emite todavía).
+	var errStepUp errorSegundoFactorRespuesta
+	status = respuestaHTTP(t, app, peticionJSON(t, http.MethodPost, "/acceso/sesiones", map[string]any{
+		"correo":     correo,
+		"contrasena": contrasenaFuerteDePrueba,
+	}), &errStepUp)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("login con MFA activo: status=%d, se esperaba 401", status)
+	}
+	motivo := errStepUp.valor("motivo_step_up")
+	if motivo != "mfa_habilitado" {
+		t.Fatalf("motivo_step_up = %q, se esperaba mfa_habilitado", motivo)
+	}
+	tokenStepUp := errStepUp.valor("token_step_up")
+	if tokenStepUp == "" {
+		t.Fatalf("la respuesta de step-up no trajo token_step_up: %+v", errStepUp)
+	}
+
+	// 5. Completar el segundo factor con un código TOTP fresco.
+	codigoStepUp := totpCodigoDePrueba(t, habilitado.SecretoEnClaro, time.Now())
+	var sesionFinal resultadoSesionDePrueba
+	status = respuestaHTTP(t, app, peticionJSON(t, http.MethodPost, "/acceso/sesiones/segundo-factor", map[string]any{
+		"token_step_up": tokenStepUp,
+		"codigo":        codigoStepUp,
+	}), &sesionFinal)
+	if status != http.StatusCreated {
+		t.Fatalf("completar segundo factor: status=%d", status)
+	}
+	if sesionFinal.IDUsuario != idUsuario {
+		t.Fatalf("completar segundo factor: id_usuario = %q, se esperaba %q", sesionFinal.IDUsuario, idUsuario)
+	}
+
+	// 6. El JWT resultante lleva amr=["pwd","otp"] (§3.6 del diseño
+	// otp-mfa.md): el único punto del sistema que emite ese claim con dos
+	// elementos.
+	claims := jwtClaims(t, sesionFinal.TokenAcceso)
+	amrCrudo, ok := claims["amr"].([]any)
+	if !ok {
+		t.Fatalf("el JWT no tiene claim amr como lista: %v", claims["amr"])
+	}
+	amr := make([]string, 0, len(amrCrudo))
+	for _, v := range amrCrudo {
+		if s, ok := v.(string); ok {
+			amr = append(amr, s)
+		}
+	}
+	if len(amr) != 2 || amr[0] != "pwd" || amr[1] != "otp" {
+		t.Fatalf("amr = %v, se esperaba [pwd otp]", amr)
+	}
+
+	// 7. Un token de step-up ya usado (o expirado) nunca puede reutilizarse
+	// como si fuera un token de acceso normal en un endpoint protegido
+	// (INV-MFA-03): lo confirma indirectamente el propio mecanismo de `typ`
+	// de cabecera, ejercitado aquí contra un endpoint Bearer real.
+	peticionListado := peticionJSON(t, http.MethodGet, "/acceso/sesiones", nil)
+	peticionListado.Header.Set("Authorization", "Bearer "+tokenStepUp)
+	var errBearer errorHumaRespuesta
+	status = respuestaHTTP(t, app, peticionListado, &errBearer)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("usar el token de step-up como Bearer normal: status=%d, se esperaba 401 (INV-MFA-03)", status)
+	}
+
+	assertCadenaAuditoriaIntegra(t, dueno)
 }

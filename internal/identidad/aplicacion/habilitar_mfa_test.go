@@ -45,7 +45,7 @@ func nuevosMocksHabilitarMFA(t *testing.T, usuario *dominio.Usuario, confirmados
 		auditoria:        &mocks.RegistroAuditoria{},
 		eventos:          &mocks.PublicadorEventos{},
 		reloj:            &mocks.Reloj{Fija: ahoraDePrueba()},
-		ids:              &mocks.GeneradorIDs{FnNuevoIDUsuario: func() (dominio.IDUsuario, error) { return idDePrueba(t, idFactorValido1), nil }},
+		ids:              &mocks.GeneradorIDs{FnNuevoIDFactorMFA: func() (dominio.IDFactorMFA, error) { return idFactorDePrueba(t, idFactorValido1), nil }},
 		uow:              &mocks.UnidadDeTrabajo{},
 	}
 }

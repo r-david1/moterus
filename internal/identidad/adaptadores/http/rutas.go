@@ -111,6 +111,62 @@ func RegistrarRutas(app *fiber.App, m *ManejadorIdentidad, validador accesopuert
 		Metadata:      metadatosEndpointPublico,
 	}, m.VerificarCorreo)
 
+	// --- MFA / OTP: autoservicio del propio sujeto (§7 del diseño otp-mfa.md) --
+	//
+	// Los tres endpoints exigen SIEMPRE Bearer (a diferencia de los cuatro de
+	// arriba, hoy públicos): actúan sobre el propio usuario autenticado, sin
+	// ID en la ruta ni en el cuerpo. Igual que GET /identidad/usuarios/{id},
+	// validador puede ir nil únicamente en tests que ejercitan Identidad de
+	// forma aislada; cmd/api/main.go SIEMPRE pasa el validador real.
+	metaMFA := map[string]any{
+		"x-auth-nivel": "bearer-acceso",
+	}
+	var middlewaresMFA huma.Middlewares
+	if validador != nil {
+		middlewaresMFA = huma.Middlewares{middlewareAutenticacionAcceso(api, validador)}
+	} else {
+		slog.Warn("identidad/adaptadores/http: RegistrarRutas se llamó sin validador de Acceso — " +
+			"los endpoints de MFA quedan sin autenticación. NO USAR EN PRODUCCIÓN.")
+	}
+
+	huma.Register(api, huma.Operation{
+		OperationID: "identidad-habilitar-mfa",
+		Method:      http.MethodPost,
+		Path:        prefijo + "/usuarios/actual/factores-mfa",
+		Summary:     "Habilitar un segundo factor TOTP",
+		Description: "Genera un FactorMFA sin confirmar y devuelve el secreto en claro + la URI de " +
+			"provisionamiento (QR), la única vez que salen del proceso (INV-MFA-02, §3.1 del diseño otp-mfa.md). " +
+			"409 si ya existe un factor confirmado y activo (ADR 0037: uno por usuario en el MVP).",
+		Tags:        []string{"Identidad", "MFA"},
+		Metadata:    metaMFA,
+		Middlewares: middlewaresMFA,
+	}, m.HabilitarMFA)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "identidad-confirmar-factor-mfa",
+		Method:      http.MethodPost,
+		Path:        prefijo + "/usuarios/actual/factores-mfa/confirmacion",
+		Summary:     "Confirmar el segundo factor con el primer código TOTP",
+		Description: "Verifica el primer código TOTP, activa Usuario.tieneMFA (INV-ID-08) y devuelve los 10 " +
+			"códigos de respaldo en claro, la única vez (ADR 0040, §3.2 del diseño otp-mfa.md).",
+		Tags:        []string{"Identidad", "MFA"},
+		Metadata:    metaMFA,
+		Middlewares: middlewaresMFA,
+	}, m.ConfirmarFactorMFA)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "identidad-deshabilitar-mfa",
+		Method:      http.MethodDelete,
+		Path:        prefijo + "/usuarios/actual/factores-mfa",
+		Summary:     "Deshabilitar el segundo factor",
+		Description: "Exige un código propio del factor (TOTP o de respaldo) en el cuerpo, además del Bearer " +
+			"(ADR 0039, INV-MFA-05): una sesión robada no basta para desarmar la protección de la cuenta.",
+		DefaultStatus: http.StatusNoContent,
+		Tags:          []string{"Identidad", "MFA"},
+		Metadata:      metaMFA,
+		Middlewares:   middlewaresMFA,
+	}, m.DeshabilitarMFA)
+
 	huma.Register(api, huma.Operation{
 		OperationID: "identidad-reenviar-verificacion-correo",
 		Method:      http.MethodPost,

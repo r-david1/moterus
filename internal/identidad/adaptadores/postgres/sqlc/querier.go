@@ -11,12 +11,20 @@ import (
 )
 
 type Querier interface {
+	// creado_en y usuario_id nunca cambian tras la creación (INV-MFA-01: un
+	// FactorMFA no cambia de dueño ni de fecha de alta).
+	ActualizarFactorMFA(ctx context.Context, arg ActualizarFactorMFAParams) (FactoresMfa, error)
 	// Persiste el estado completo del agregado tras una mutación de negocio
 	// (cambio de contraseña, transición de estado, flip de tiene_mfa,
 	// actualizado_en). ultimo_acceso_en se actualiza aparte con
 	// RegistrarAccesoUsuario, ya que RegistrarAcceso no siempre corre en la
 	// misma llamada que las demás mutaciones.
 	ActualizarUsuario(ctx context.Context, arg ActualizarUsuarioParams) (Usuario, error)
+	ContarFactoresMFAConfirmadosActivosDeUsuario(ctx context.Context, usuarioID pgtype.UUID) (int64, error)
+	// Queries de factores_mfa/codigos_respaldo_mfa. Implementan
+	// identidad/puertos.RepositorioFactoresMFA (docs/design/otp-mfa.md §2.2,
+	// ADR 0037/0040, migración 000015).
+	CrearFactorMFA(ctx context.Context, arg CrearFactorMFAParams) (FactoresMfa, error)
 	// Queries sqlc del contexto Identidad. Implementan
 	// identidad/puertos.RepositorioUsuarios (ver
 	// docs/design/identidad-bounded-context.md, sección 2.2).
@@ -26,11 +34,27 @@ type Querier interface {
 	// contexto importa internal/identidad/adaptadores/postgres/sqlc.
 	CrearUsuario(ctx context.Context, arg CrearUsuarioParams) (Usuario, error)
 	EliminarTokenVerificacionCorreoPorUsuario(ctx context.Context, usuarioID pgtype.UUID) error
+	ObtenerCodigosRespaldoDeFactor(ctx context.Context, factorID pgtype.UUID) ([]CodigosRespaldoMfa, error)
+	ObtenerFactorMFAPorID(ctx context.Context, id pgtype.UUID) (FactoresMfa, error)
+	// "Confirmados", en este puerto, significa SIEMPRE confirmado=true AND
+	// activo=true (ver el comentario de RepositorioFactoresMFA en
+	// identidad/puertos/salida.go y la nota de cabecera de la migración
+	// 000015): un factor deshabilitado sigue confirmado=true para siempre
+	// (hecho histórico) pero deja de contar aquí.
+	ObtenerFactoresMFAConfirmadosActivosDeUsuario(ctx context.Context, usuarioID pgtype.UUID) ([]FactoresMfa, error)
 	ObtenerTokenVerificacionCorreoPorHash(ctx context.Context, hashToken string) (TokensVerificacionCorreo, error)
 	ObtenerUsuarioPorCorreo(ctx context.Context, correo string) (Usuario, error)
 	ObtenerUsuarioPorID(ctx context.Context, id pgtype.UUID) (Usuario, error)
 	// Usuario.RegistrarAcceso(ahora): marca el último inicio de sesión exitoso.
 	RegistrarAccesoUsuario(ctx context.Context, arg RegistrarAccesoUsuarioParams) (Usuario, error)
+	// codigos_respaldo_mfa tiene DELETE revocado para rol_aplicacion (000015:
+	// "un código de respaldo consumido queda marcado con usado_en, no se
+	// borra"), así que RepositorioFactoresMFA.Guardar nunca borra e inserta de
+	// nuevo la colección: hace upsert por hash_codigo (único en todo el
+	// sistema) tanto para la creación inicial (ConfirmarFactorMFA, 10 filas con
+	// usado_en NULL) como para marcar un código consumido después
+	// (VerificarOTP/DeshabilitarMFA).
+	UpsertCodigoRespaldoMFA(ctx context.Context, arg UpsertCodigoRespaldoMFAParams) error
 	// Queries de tokens_verificacion_correo. Implementan
 	// identidad/puertos.RepositorioTokensVerificacion (sección 3.4 del diseño).
 	// usuario_id es UNIQUE (000004): un reenvío invalida el token anterior sin

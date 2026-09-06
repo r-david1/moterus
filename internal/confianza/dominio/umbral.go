@@ -100,6 +100,16 @@ func PoliticaLimitesPorDefecto() PoliticaLimites {
 			IP:     Umbral{Limite: 10, Ventana: time.Minute},
 			Cuenta: Umbral{Limite: 10, Ventana: time.Minute},
 		},
+		// verificar_otp: usuario("usuario:<id>") 5/15min · IP 20/15min (§7 de
+		// docs/design/otp-mfa.md) — oráculo de fuerza bruta clásico sobre un
+		// código de 6 dígitos (10^6 combinaciones) con ventanas de 30s;
+		// deliberadamente más agresivo por cuenta que por IP, mismo criterio
+		// que login: un atacante dirigido a una cuenta concreta agota su
+		// cupo mucho antes que uno distribuido en muchas IPs.
+		AccionVerificarOTP: {
+			IP:     Umbral{Limite: 20, Ventana: 15 * time.Minute},
+			Cuenta: Umbral{Limite: 5, Ventana: 15 * time.Minute},
+		},
 	}
 }
 

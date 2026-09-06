@@ -152,7 +152,7 @@ func nuevoServidorTenencia(t *testing.T, pool *pgxpool.Pool) (*fiber.App, *captu
 		repositorioUsuarios, generadorTokensIdentidad, repositorioTokensVerificacion, notificadorCorreo, relojReal,
 	)
 	manejadorIdentidad := identidadhttp.NuevoManejadorIdentidad(
-		registrador, autenticadorIdentidad, consultorIdentidad, verificadorCorreo, reenviadorVerificacion, evaluadorConfianzaIdentidad, nil,
+		registrador, autenticadorIdentidad, consultorIdentidad, verificadorCorreo, reenviadorVerificacion, evaluadorConfianzaIdentidad, nil, nil,
 	)
 
 	// --- Acceso ---------------------------------------------------------------
@@ -210,7 +210,7 @@ func nuevoServidorTenencia(t *testing.T, pool *pgxpool.Pool) (*fiber.App, *captu
 	cerrador := accesoaplicacion.NuevoCerrarSesionCasoDeUso(sesiones, evaluadorConfianzaAcceso, listaRevocacion, registroAuditoriaAcceso, relojReal, uowAcceso, politicaSesion)
 	consultorSesiones := accesoaplicacion.NuevoListarSesionesCasoDeUso(sesiones)
 
-	manejadorAcceso := accesohttp.NuevoManejadorAcceso(iniciador, renovador, cerrador, consultorSesiones, firmador)
+	manejadorAcceso := accesohttp.NuevoManejadorAcceso(iniciador, renovador, cerrador, consultorSesiones, firmador, nil)
 
 	app := fiber.New(fiber.Config{DisableStartupMessage: true})
 	accesohttp.RegistrarRutas(app, manejadorAcceso, validador)

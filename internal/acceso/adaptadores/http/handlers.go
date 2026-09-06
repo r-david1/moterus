@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 
+	"github.com/r-david1/moterus/internal/acceso/aplicacion"
 	"github.com/r-david1/moterus/internal/acceso/dominio"
 	"github.com/r-david1/moterus/internal/acceso/puertos"
 )
@@ -19,28 +20,37 @@ import (
 // infraestructura (serializar JWKS), sin transacción ni auditoría que
 // orquestar.
 type ManejadorAcceso struct {
-	iniciador puertos.IniciadorDeSesion
-	renovador puertos.RenovadorDeSesion
-	cerrador  puertos.CerradorDeSesiones
-	consultor puertos.ConsultorDeSesiones
-	firmador  puertos.FirmadorTokensAcceso
+	iniciador                puertos.IniciadorDeSesion
+	renovador                puertos.RenovadorDeSesion
+	cerrador                 puertos.CerradorDeSesiones
+	consultor                puertos.ConsultorDeSesiones
+	firmador                 puertos.FirmadorTokensAcceso
+	completadorSegundoFactor *aplicacion.CompletarSegundoFactorCasoDeUso
 }
 
 // NuevoManejadorAcceso construye el manejador HTTP con sus puertos
-// inyectados.
+// inyectados. completadorSegundoFactor es el struct concreto de
+// acceso/aplicacion (§3.6 del diseño otp-mfa.md), no un puerto de entrada:
+// acceso/puertos/entrada.go no declara ninguno para este caso de uso
+// (ComandoCompletarSegundoFactor vive junto al caso de uso por el mismo
+// motivo, ver completar_segundo_factor.go) — es la única dependencia de
+// este adaptador sobre un tipo concreto de aplicacion, en vez de una
+// interfaz de puertos.
 func NuevoManejadorAcceso(
 	iniciador puertos.IniciadorDeSesion,
 	renovador puertos.RenovadorDeSesion,
 	cerrador puertos.CerradorDeSesiones,
 	consultor puertos.ConsultorDeSesiones,
 	firmador puertos.FirmadorTokensAcceso,
+	completadorSegundoFactor *aplicacion.CompletarSegundoFactorCasoDeUso,
 ) *ManejadorAcceso {
 	return &ManejadorAcceso{
-		iniciador: iniciador,
-		renovador: renovador,
-		cerrador:  cerrador,
-		consultor: consultor,
-		firmador:  firmador,
+		iniciador:                iniciador,
+		renovador:                renovador,
+		cerrador:                 cerrador,
+		consultor:                consultor,
+		firmador:                 firmador,
+		completadorSegundoFactor: completadorSegundoFactor,
 	}
 }
 
@@ -152,6 +162,24 @@ func (m *ManejadorAcceso) ListarSesiones(ctx context.Context, _ *ListarSesionesI
 		body = append(body, vistaSesionRespuestaDesde(v))
 	}
 	return &ListarSesionesOutput{Body: body}, nil
+}
+
+// CompletarSegundoFactor implementa el handler Huma de POST
+// /acceso/sesiones/segundo-factor (§3.6/§7 del diseño otp-mfa.md). Sin
+// middleware de autenticación Bearer: la credencial de este endpoint es el
+// propio token de step-up del cuerpo (INV-MFA-03), que el caso de uso valida
+// internamente vía EmisorTokenStepUp.Validar — nunca el token de acceso
+// normal.
+func (m *ManejadorAcceso) CompletarSegundoFactor(ctx context.Context, in *CompletarSegundoFactorInput) (*CompletarSegundoFactorOutput, error) {
+	resultado, err := m.completadorSegundoFactor.CompletarSegundoFactor(ctx, aplicacion.ComandoCompletarSegundoFactor{
+		TokenStepUp: in.Body.TokenStepUp,
+		Codigo:      in.Body.Codigo,
+		Origen:      OrigenSolicitudDesdeContexto(ctx),
+	})
+	if err != nil {
+		return nil, mapearErrorDominio(ctx, err)
+	}
+	return &CompletarSegundoFactorOutput{Body: resultadoSesionRespuestaDesde(resultado)}, nil
 }
 
 // JWKS implementa el handler Huma de GET /.well-known/jwks.json (§7 del

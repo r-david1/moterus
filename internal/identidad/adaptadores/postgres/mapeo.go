@@ -23,6 +23,16 @@ func idAPg(id dominio.IDUsuario) (pgtype.UUID, error) {
 	return v, nil
 }
 
+// idFactorAPg convierte un dominio.IDFactorMFA ya validado a pgtype.UUID
+// (docs/design/otp-mfa.md §2.2, migración 000015).
+func idFactorAPg(id dominio.IDFactorMFA) (pgtype.UUID, error) {
+	var v pgtype.UUID
+	if err := v.Scan(id.String()); err != nil {
+		return pgtype.UUID{}, err
+	}
+	return v, nil
+}
+
 // tiempoAPg convierte un time.Time a pgtype.Timestamptz válido.
 func tiempoAPg(t time.Time) pgtype.Timestamptz {
 	return pgtype.Timestamptz{Time: t, Valid: true}

@@ -58,7 +58,7 @@ func mapearErrorDominio(ctx context.Context, err error) error {
 			Title:  "se requiere un segundo factor",
 			Status: http.StatusUnauthorized,
 			Detail: "la autenticación es válida pero exige un paso adicional antes de emitir una sesión",
-			Errors: []*huma.ErrorDetail{{Message: "motivo_step_up: " + errSegundoFactor.MotivoStepUp}},
+			Errors: detallesSegundoFactor(errSegundoFactor),
 		}
 
 	case errors.As(err, &errRefrescoInvalido):
@@ -126,6 +126,21 @@ func mapearErrorDominio(ctx context.Context, err error) error {
 		slog.ErrorContext(ctx, "error no mapeado en el adaptador HTTP de acceso", "error", err)
 		return huma.NewError(http.StatusInternalServerError, "error interno del servidor")
 	}
+}
+
+// detallesSegundoFactor arma los detalles RFC 9457 de ErrSegundoFactorRequerido:
+// MotivoStepUp (§7 del diseño) y, cuando viene fijado, TokenStepUp (§3.5 del
+// diseño otp-mfa.md, ADR 0038) — el token que el cliente reenvía en
+// POST /acceso/sesiones/segundo-factor para completar el login sin volver a
+// presentar la contraseña. huma.ErrorModel no tiene un campo propio para
+// esto, así que viaja como un huma.ErrorDetail más, mismo criterio que ya
+// usaba este endpoint para MotivoStepUp antes de que TokenStepUp existiera.
+func detallesSegundoFactor(e *dominio.ErrSegundoFactorRequerido) []*huma.ErrorDetail {
+	detalles := []*huma.ErrorDetail{{Message: "motivo_step_up: " + e.MotivoStepUp}}
+	if e.TokenStepUp != "" {
+		detalles = append(detalles, &huma.ErrorDetail{Message: "token_step_up: " + e.TokenStepUp})
+	}
+	return detalles
 }
 
 // conAutenticacion agrega la cabecera WWW-Authenticate exigida por RFC

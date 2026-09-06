@@ -18,6 +18,9 @@ type ManejadorIdentidad struct {
 	consultor                puertos.ConsultorDeUsuarios
 	verificadorDeCorreo      puertos.VerificadorDeCorreo
 	reenviadorDeVerificacion puertos.ReenviadorDeVerificacion
+	// gestorMFA implementa los tres endpoints de autoservicio de MFA (§7 del
+	// diseño otp-mfa.md): Habilitar/ConfirmarFactor/Deshabilitar.
+	gestorMFA puertos.GestorDeMFA
 	// confianza es el mismo puertos.EvaluadorConfianza que ya usan
 	// internamente RegistrarUsuarioCasoDeUso y AutenticarUsuarioCasoDeUso
 	// (inyectado dos veces: una vez en aplicacion, otra aquí) — se
@@ -48,6 +51,7 @@ func NuevoManejadorIdentidad(
 	reenviadorDeVerificacion puertos.ReenviadorDeVerificacion,
 	confianza puertos.EvaluadorConfianza,
 	autorizadorConsultas puertos.AutorizadorDeConsultas,
+	gestorMFA puertos.GestorDeMFA,
 ) *ManejadorIdentidad {
 	return &ManejadorIdentidad{
 		registrador:              registrador,
@@ -57,6 +61,7 @@ func NuevoManejadorIdentidad(
 		reenviadorDeVerificacion: reenviadorDeVerificacion,
 		confianza:                confianza,
 		autorizadorConsultas:     autorizadorConsultas,
+		gestorMFA:                gestorMFA,
 	}
 }
 
@@ -222,4 +227,61 @@ func (m *ManejadorIdentidad) ReenviarVerificacion(ctx context.Context, in *Reenv
 		Origen: origen,
 	})
 	return &ReenviarVerificacionOutput{}, nil
+}
+
+// HabilitarMFA implementa el handler Huma de
+// POST /identidad/usuarios/actual/factores-mfa (§3.1/§7 del diseño
+// otp-mfa.md). IDSujeto sale SIEMPRE del token Bearer ya validado
+// (accesoDesdeContexto), nunca de un parámetro que el cliente controle
+// (mismo criterio que INV-TEN-12/INV-ACC-23). Un handler invocado sin pasar
+// por middlewareAutenticacionAcceso (p. ej. un test unitario) produce el
+// mismo error de dominio que un IDSujeto vacío: ErrUsuarioNoEncontrado vía
+// el propio caso de uso, sin necesitar un chequeo especial aquí.
+func (m *ManejadorIdentidad) HabilitarMFA(ctx context.Context, _ *HabilitarMFAInput) (*HabilitarMFAOutput, error) {
+	acceso, _ := accesoDesdeContexto(ctx)
+	resultado, err := m.gestorMFA.Habilitar(ctx, puertos.ComandoHabilitarMFA{
+		IDSujeto: acceso.IDUsuario,
+	})
+	if err != nil {
+		return nil, mapearErrorDominio(ctx, err)
+	}
+	return &HabilitarMFAOutput{Body: resultadoHabilitarMFARespuesta{
+		IDFactor:            resultado.IDFactor,
+		SecretoEnClaro:      resultado.SecretoEnClaro,
+		URIProvisionamiento: resultado.URIProvisionamiento,
+	}}, nil
+}
+
+// ConfirmarFactorMFA implementa el handler Huma de
+// POST /identidad/usuarios/actual/factores-mfa/confirmacion (§3.2/§7 del
+// diseño otp-mfa.md). Mismo criterio que HabilitarMFA: IDSujeto sale del
+// token Bearer, nunca del cuerpo.
+func (m *ManejadorIdentidad) ConfirmarFactorMFA(ctx context.Context, in *ConfirmarFactorMFAInput) (*ConfirmarFactorMFAOutput, error) {
+	acceso, _ := accesoDesdeContexto(ctx)
+	resultado, err := m.gestorMFA.ConfirmarFactor(ctx, puertos.ComandoConfirmarFactorMFA{
+		IDSujeto: acceso.IDUsuario,
+		IDFactor: in.Body.IDFactor,
+		Codigo:   in.Body.Codigo,
+	})
+	if err != nil {
+		return nil, mapearErrorDominio(ctx, err)
+	}
+	return &ConfirmarFactorMFAOutput{Body: resultadoConfirmarMFARespuesta{
+		CodigosRespaldo: resultado.CodigosRespaldo,
+	}}, nil
+}
+
+// DeshabilitarMFA implementa el handler Huma de
+// DELETE /identidad/usuarios/actual/factores-mfa (§3.3/§7 del diseño
+// otp-mfa.md, ADR 0039): exige un código propio del factor en el cuerpo,
+// no basta con el Bearer (INV-MFA-05).
+func (m *ManejadorIdentidad) DeshabilitarMFA(ctx context.Context, in *DeshabilitarMFAInput) (*DeshabilitarMFAOutput, error) {
+	acceso, _ := accesoDesdeContexto(ctx)
+	if err := m.gestorMFA.Deshabilitar(ctx, puertos.ComandoDeshabilitarMFA{
+		IDSujeto: acceso.IDUsuario,
+		Codigo:   in.Body.Codigo,
+	}); err != nil {
+		return nil, mapearErrorDominio(ctx, err)
+	}
+	return &DeshabilitarMFAOutput{}, nil
 }

@@ -177,6 +177,62 @@ func mapearEvento(e dominio.EventoDominio) (filaAuditoria, bool) {
 			detalles:  map[string]any{"solicitante_id": ev.IDSolicitante},
 		}, true
 
+	// --- MFA/OTP (docs/design/otp-mfa.md §1.6/§6, migración 000016) --------
+	//
+	// Las cinco acciones nuevas del catálogo cerrado. INV-MFA-07/INV-ID-17:
+	// ningún detalle transporta el secreto TOTP, un código en claro ni un
+	// código de respaldo en claro — los cinco eventos de dominio ya
+	// garantizan eso estructuralmente (solo llevan IDs y contadores).
+
+	case dominio.FactorMFAHabilitado:
+		return filaAuditoria{
+			accion:    "usuario.mfa_habilitado",
+			recurso:   recursoUsuario,
+			recursoID: ev.IDUsuario,
+			resultado: resultadoExito,
+			usuarioID: ev.IDUsuario,
+			detalles:  map[string]any{"factor_id": ev.IDFactor},
+		}, true
+
+	case dominio.FactorMFAConfirmado:
+		return filaAuditoria{
+			accion:    "usuario.mfa_confirmado",
+			recurso:   recursoUsuario,
+			recursoID: ev.IDUsuario,
+			resultado: resultadoExito,
+			usuarioID: ev.IDUsuario,
+			detalles:  map[string]any{"factor_id": ev.IDFactor},
+		}, true
+
+	case dominio.FactorMFADeshabilitado:
+		return filaAuditoria{
+			accion:    "usuario.mfa_deshabilitado",
+			recurso:   recursoUsuario,
+			recursoID: ev.IDUsuario,
+			resultado: resultadoExito,
+			usuarioID: ev.IDUsuario,
+			detalles:  map[string]any{"factor_id": ev.IDFactor},
+		}, true
+
+	case dominio.CodigoRespaldoConsumido:
+		return filaAuditoria{
+			accion:    "usuario.codigo_respaldo_consumido",
+			recurso:   recursoUsuario,
+			recursoID: ev.IDUsuario,
+			resultado: resultadoExito,
+			usuarioID: ev.IDUsuario,
+			detalles:  map[string]any{"factor_id": ev.IDFactor, "codigos_restantes": ev.CodigosRestantes},
+		}, true
+
+	case dominio.VerificacionOTPFallida:
+		return filaAuditoria{
+			accion:    "usuario.otp_verificacion_fallida",
+			recurso:   recursoUsuario,
+			recursoID: ev.IDUsuario,
+			resultado: resultadoFallo,
+			usuarioID: ev.IDUsuario,
+		}, true
+
 	default:
 		return filaAuditoria{}, false
 	}

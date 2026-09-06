@@ -163,3 +163,72 @@ type ReenviarVerificacionInput struct {
 // Cuerpo vacío a propósito (INV-ID-22): la respuesta es siempre 202
 // Accepted sin ningún cuerpo distintivo, exista o no el correo.
 type ReenviarVerificacionOutput struct{}
+
+// --- POST /identidad/usuarios/actual/factores-mfa (habilitar MFA) ----------
+// --- POST .../factores-mfa/confirmacion (confirmar)                  ------
+// --- DELETE /identidad/usuarios/actual/factores-mfa (deshabilitar)   ------
+//
+// Los tres endpoints (§7 del diseño otp-mfa.md) actúan siempre sobre el
+// propio sujeto autenticado: ninguno lleva un ID en la ruta ni en el
+// cuerpo, IDSujeto sale siempre de accesoDesdeContexto (el token Bearer ya
+// validado), nunca de un parámetro que el cliente controle.
+
+// HabilitarMFAInput es el input Huma de habilitar MFA. Sin cuerpo: no hay
+// ningún parámetro que el cliente deba enviar (§3.1 del diseño).
+type HabilitarMFAInput struct{}
+
+// resultadoHabilitarMFARespuesta es el cuerpo de la respuesta de habilitar
+// MFA. Proyección 1:1 de puertos.ResultadoHabilitarMFA: lleva el secreto EN
+// CLARO y la URI de provisionamiento, la única vez que salen del proceso
+// (INV-MFA-02).
+type resultadoHabilitarMFARespuesta struct {
+	IDFactor            string `json:"id_factor" doc:"Identificador del factor MFA recién creado, sin confirmar todavía."`
+	SecretoEnClaro      string `json:"secreto_en_claro" doc:"Secreto TOTP en Base32, para mostrar como texto además/en vez del QR. Nunca vuelve a estar disponible tras esta respuesta."`
+	URIProvisionamiento string `json:"uri_provisionamiento" doc:"URI otpauth://totp/... para generar el código QR que la app autenticadora del usuario escanea."`
+}
+
+// HabilitarMFAOutput es el output Huma de habilitar MFA.
+type HabilitarMFAOutput struct {
+	Body resultadoHabilitarMFARespuesta
+}
+
+// confirmarFactorMFAPeticion es el cuerpo de la solicitud de confirmación:
+// el ID del factor recién habilitado y el primer código TOTP leído de la
+// app autenticadora.
+type confirmarFactorMFAPeticion struct {
+	IDFactor string `json:"id_factor" format:"uuid" doc:"Identificador del factor MFA devuelto por el endpoint de habilitación."`
+	Codigo   string `json:"codigo" minLength:"6" maxLength:"6" doc:"Código TOTP de 6 dígitos mostrado por la app autenticadora." example:"123456"`
+}
+
+// ConfirmarFactorMFAInput es el input Huma de la confirmación de un factor.
+type ConfirmarFactorMFAInput struct {
+	Body confirmarFactorMFAPeticion
+}
+
+// resultadoConfirmarMFARespuesta es el cuerpo de la respuesta de una
+// confirmación exitosa. Proyección 1:1 de puertos.ResultadoConfirmarMFA:
+// lleva los 10 códigos de respaldo EN CLARO, la única vez (ADR 0040).
+type resultadoConfirmarMFARespuesta struct {
+	CodigosRespaldo []string `json:"codigos_respaldo" doc:"Los 10 códigos de respaldo de un solo uso, en claro. Guárdalos ahora: no se vuelven a mostrar (solo su hash queda en el servidor)."`
+}
+
+// ConfirmarFactorMFAOutput es el output Huma de la confirmación.
+type ConfirmarFactorMFAOutput struct {
+	Body resultadoConfirmarMFARespuesta
+}
+
+// deshabilitarMFAPeticion es el cuerpo de la solicitud de deshabilitación:
+// exige un código propio del factor (TOTP vigente o de respaldo no usado),
+// no basta con el Bearer (ADR 0039, INV-MFA-05).
+type deshabilitarMFAPeticion struct {
+	Codigo string `json:"codigo" minLength:"6" maxLength:"10" doc:"Código TOTP (6 dígitos) o de respaldo (10 caracteres) del factor que se va a deshabilitar."`
+}
+
+// DeshabilitarMFAInput es el input Huma de deshabilitar MFA.
+type DeshabilitarMFAInput struct {
+	Body deshabilitarMFAPeticion
+}
+
+// DeshabilitarMFAOutput es el output Huma de deshabilitar MFA. Cuerpo vacío
+// (204): no hay nada más que confirmar que la baja ocurrió.
+type DeshabilitarMFAOutput struct{}

@@ -10,12 +10,10 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"log/slog"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -136,12 +134,15 @@ func montarIdentidadYAcceso(ctx context.Context, app *fiber.App, cfg configuraci
 
 	repositorioUsuarios := identidadpostgres.NuevoRepositorioUsuarios(pool)
 	repositorioTokensVerificacion := identidadpostgres.NuevoRepositorioTokensVerificacion(pool)
+	repositorioFactoresMFA := identidadpostgres.NuevoRepositorioFactoresMFA(pool)
 	unidadDeTrabajoIdentidad := identidadpostgres.NuevaUnidadDeTrabajo(pool)
 	generadorIDsIdentidad := identidadpostgres.NuevoGeneradorIDs()
 
 	hasher := cripto.NuevoHasherArgon2id()
 	verificadorFiltradas := cripto.NuevoVerificadorHIBP()
 	generadorTokensIdentidad := cripto.NuevoGeneradorTokens()
+	generadorTOTP := cripto.NuevoGeneradorTOTP()
+	cifradorSecretosMFA := construirCifradorSecretosMFA(cfg)
 
 	registroAuditoriaIdentidad := auditoria.NuevoRegistroAuditoria(pool)
 	publicadorEventosIdentidad := eventos.NuevoPublicadorLog(nil)
@@ -165,9 +166,40 @@ func montarIdentidadYAcceso(ctx context.Context, app *fiber.App, cfg configuraci
 		repositorioUsuarios, generadorTokensIdentidad, repositorioTokensVerificacion, notificadorCorreo, relojReal,
 	)
 
+	// --- Identidad: OTP/MFA (docs/design/otp-mfa.md) -----------------------
+	//
+	// Cuatro casos de uso nuevos sobre el mismo repositorioUsuarios/
+	// auditoria/eventos/reloj/uow ya ensamblados arriba. gestorMFACompuesto
+	// (definido más abajo en este archivo) es la única pieza de wiring no
+	// trivial: puertos.GestorDeMFA (identidad/puertos/entrada.go, cerrado
+	// para este encargo) agrupa Habilitar/ConfirmarFactor/Deshabilitar en UNA
+	// interfaz, pero cada caso de uso de aplicacion implementa solo UNO de
+	// esos tres métodos (HabilitarMFACasoDeUso.Habilitar,
+	// ConfirmarFactorMFACasoDeUso.ConfirmarFactor,
+	// DeshabilitarMFACasoDeUso.Deshabilitar) — ningún struct de aplicacion
+	// satisface GestorDeMFA por sí solo. gestorMFACompuesto es el adaptador
+	// de composición que cierra ese hueco delegando cada método al caso de
+	// uso correspondiente, sin tocar aplicacion/puertos.
+	habilitarMFA := aplicacion.NuevoHabilitarMFACasoDeUso(
+		repositorioUsuarios, repositorioFactoresMFA, generadorTOTP, cifradorSecretosMFA,
+		registroAuditoriaIdentidad, publicadorEventosIdentidad, relojReal, generadorIDsIdentidad, unidadDeTrabajoIdentidad,
+	)
+	confirmarFactorMFA := aplicacion.NuevoConfirmarFactorMFACasoDeUso(
+		repositorioUsuarios, repositorioFactoresMFA, generadorTOTP, cifradorSecretosMFA,
+		registroAuditoriaIdentidad, publicadorEventosIdentidad, relojReal, unidadDeTrabajoIdentidad,
+	)
+	deshabilitarMFA := aplicacion.NuevoDeshabilitarMFACasoDeUso(
+		repositorioUsuarios, repositorioFactoresMFA, cifradorSecretosMFA,
+		registroAuditoriaIdentidad, publicadorEventosIdentidad, relojReal, unidadDeTrabajoIdentidad,
+	)
+	verificarOTP := aplicacion.NuevoVerificarOTPCasoDeUso(
+		repositorioFactoresMFA, cifradorSecretosMFA, registroAuditoriaIdentidad, relojReal, unidadDeTrabajoIdentidad,
+	)
+	gestorMFA := gestorMFACompuesto{habilitar: habilitarMFA, confirmar: confirmarFactorMFA, deshabilitar: deshabilitarMFA}
+
 	// --- Acceso: adaptadores, casos de uso y rutas -------------------------
 
-	validadorAcceso, manejadorAcceso := montarAcceso(cfg, pool, relojReal, autenticadorIdentidad, consultorIdentidad, riesgo)
+	validadorAcceso, manejadorAcceso := montarAcceso(cfg, pool, relojReal, autenticadorIdentidad, consultorIdentidad, verificarOTP, riesgo)
 	accesohttp.RegistrarRutas(app, manejadorAcceso, validadorAcceso)
 
 	// --- Tenencia: adaptadores, casos de uso y rutas -----------------------
@@ -184,7 +216,7 @@ func montarIdentidadYAcceso(ctx context.Context, app *fiber.App, cfg configuraci
 
 	manejadorIdentidad := identidadhttp.NuevoManejadorIdentidad(
 		registrador, autenticadorIdentidad, consultorIdentidad, verificadorCorreo, reenviadorVerificacion,
-		evaluadorConfianzaIdentidad, autorizadorConsultasIdentidad,
+		evaluadorConfianzaIdentidad, autorizadorConsultasIdentidad, gestorMFA,
 	)
 
 	// --- Identidad: rutas (ahora sí, con el validador de Acceso) ----------
@@ -211,6 +243,7 @@ func montarAcceso(
 	relojReal reloj.Real,
 	autenticadorIdentidad identidadpuertos.AutenticadorDeCredenciales,
 	consultorIdentidad identidadpuertos.ConsultorDeUsuarios,
+	verificadorOTPIdentidad identidadpuertos.VerificadorOTP,
 	riesgo confianzapuertos.EvaluadorDeRiesgo,
 ) (accesopuertos.ValidadorDeAccesos, *accesohttp.ManejadorAcceso) {
 	politica := accesodominio.PoliticaSesionPorDefecto()
@@ -270,19 +303,13 @@ func montarAcceso(
 
 	autenticadorACL := accesoidentidad.NuevoAutenticadorIdentidad(autenticadorIdentidad)
 	consultorEstadoSujeto := accesoidentidad.NuevoConsultorEstadoSujeto(consultorIdentidad)
+	verificadorSegundoFactorACL := accesoidentidad.NuevoVerificadorOTP(verificadorOTPIdentidad)
 
-	// emisorStepUp: el adaptador real (JWT propio de Acceso, TTL de 5
-	// minutos, ADR 0038/docs/design/otp-mfa.md §2.4, reutilizando el
-	// Llavero ya construido arriba) todavía no existe en
-	// internal/acceso/adaptadores/jwt — es trabajo de infraestructura
-	// pendiente, fuera del alcance de este cambio (que solo extiende la
-	// capa de aplicación de Identidad/Acceso). Se usa aquí un placeholder
-	// que falla explícitamente en vez de fingir emitir un token válido: el
-	// login de un usuario que NO requiere segundo factor sigue funcionando
-	// de punta a punta sin tocar este puerto; solo el paso "emitir el
-	// token de step-up cuando RequiereSegundoFactor==true" queda roto
-	// hasta que el adaptador real se implemente.
-	emisorStepUp := emisorTokenStepUpPendiente{}
+	// emisorStepUp: JWT propio de Acceso (ADR 0038/docs/design/otp-mfa.md
+	// §2.4), reutilizando el MISMO Llavero que Firmador ya construyó arriba
+	// — sin llave nueva ni JWKS nuevo, solo un `typ` de cabecera distinto
+	// (INV-MFA-03).
+	emisorStepUp := accesojwt.NuevoEmisorTokenStepUp(llavero, politica.ToleranciaReloj())
 
 	iniciador := accesoaplicacion.NuevoIniciarSesionCasoDeUso(
 		autenticadorACL, sesiones, generadorRefrescos, firmador, listaRevocacion,
@@ -296,8 +323,11 @@ func montarAcceso(
 	validador := accesoaplicacion.NuevoValidarAccesoCasoDeUso(firmador, listaRevocacion, sesiones, registroAuditoria, relojReal)
 	cerrador := accesoaplicacion.NuevoCerrarSesionCasoDeUso(sesiones, evaluadorConfianzaAcceso, listaRevocacion, registroAuditoria, relojReal, uow, politica)
 	consultorSesiones := accesoaplicacion.NuevoListarSesionesCasoDeUso(sesiones)
+	completadorSegundoFactor := accesoaplicacion.NuevoCompletarSegundoFactorCasoDeUso(
+		emisorStepUp, evaluadorConfianzaAcceso, verificadorSegundoFactorACL, iniciador,
+	)
 
-	manejador := accesohttp.NuevoManejadorAcceso(iniciador, renovador, cerrador, consultorSesiones, firmador)
+	manejador := accesohttp.NuevoManejadorAcceso(iniciador, renovador, cerrador, consultorSesiones, firmador, completadorSegundoFactor)
 
 	estadoRedis := "sin-redis(lista-revocacion-degradada-hasta-vida-token-acceso)"
 	if cfg.URLRedis != "" {
@@ -313,24 +343,30 @@ func montarAcceso(
 	return validador, manejador
 }
 
-// emisorTokenStepUpPendiente es un placeholder TEMPORAL de
-// puertos.EmisorTokenStepUp (ADR 0038, docs/design/otp-mfa.md §2.4). El
-// adaptador real (JWT propio de Acceso firmado con el mismo Llavero de
-// FirmadorTokensAcceso, TTL de 5 minutos, `typ` de cabecera distintivo) es
-// trabajo de infraestructura pendiente en
-// internal/acceso/adaptadores/jwt, fuera del alcance de la capa de
-// aplicación. Emitir/Validar fallan explícitamente en vez de fingir emitir
-// un token válido: solo afecta al login de un usuario para el que
-// Identidad exige un segundo factor (RequiereSegundoFactor==true); el
-// resto del flujo de autenticación no toca este puerto.
-type emisorTokenStepUpPendiente struct{}
-
-func (emisorTokenStepUpPendiente) Emitir(_ context.Context, _ string, _ string, _ time.Time) (accesopuertos.TokenStepUp, error) {
-	return accesopuertos.TokenStepUp{}, fmt.Errorf("EmisorTokenStepUp: adaptador real pendiente de implementar (ADR 0038)")
+// gestorMFACompuesto implementa identidad/puertos.GestorDeMFA delegando
+// cada método al caso de uso de aplicacion que efectivamente lo implementa
+// (ver el comentario en montarIdentidadYAcceso sobre por qué hace falta
+// este adaptador de composición: GestorDeMFA agrupa tres operaciones en una
+// sola interfaz de puerto, pero cada caso de uso de aplicacion solo
+// implementa una).
+type gestorMFACompuesto struct {
+	habilitar    *aplicacion.HabilitarMFACasoDeUso
+	confirmar    *aplicacion.ConfirmarFactorMFACasoDeUso
+	deshabilitar *aplicacion.DeshabilitarMFACasoDeUso
 }
 
-func (emisorTokenStepUpPendiente) Validar(_ context.Context, _ string) (accesopuertos.ClaimsStepUp, error) {
-	return accesopuertos.ClaimsStepUp{}, fmt.Errorf("EmisorTokenStepUp: adaptador real pendiente de implementar (ADR 0038)")
+var _ identidadpuertos.GestorDeMFA = gestorMFACompuesto{}
+
+func (g gestorMFACompuesto) Habilitar(ctx context.Context, cmd identidadpuertos.ComandoHabilitarMFA) (identidadpuertos.ResultadoHabilitarMFA, error) {
+	return g.habilitar.Habilitar(ctx, cmd)
+}
+
+func (g gestorMFACompuesto) ConfirmarFactor(ctx context.Context, cmd identidadpuertos.ComandoConfirmarFactorMFA) (identidadpuertos.ResultadoConfirmarMFA, error) {
+	return g.confirmar.ConfirmarFactor(ctx, cmd)
+}
+
+func (g gestorMFACompuesto) Deshabilitar(ctx context.Context, cmd identidadpuertos.ComandoDeshabilitarMFA) error {
+	return g.deshabilitar.Deshabilitar(ctx, cmd)
 }
 
 // montarTenencia ensambla el bounded context Tenencia completo
@@ -439,6 +475,42 @@ func construirEvaluadorDeRiesgo(cfg configuracion.Config) confianzapuertos.Evalu
 	slog.Info("api: motor de Confianza real montado (rate limiting por IP y por cuenta vía Redis + captcha Cloudflare Turnstile)",
 		"redis_configurado", true, "turnstile_secret_configurado", cfg.TurnstileSecretKey != "")
 	return evaluarTrustSignal
+}
+
+// construirCifradorSecretosMFA implementa el mismo criterio de gestión de
+// llaves que ACCESO_LLAVE_FIRMA (ADR 0020 §4) para
+// IDENTIDAD_LLAVE_CIFRADO_MFA (docs/design/otp-mfa.md §2.2, AES-256-GCM):
+// sin ella en APP_ENV=production, el proceso no arranca; fuera de
+// producción, si falta, genera una llave efímera en memoria con un WARN
+// explícito de que los secretos TOTP cifrados con ella quedan
+// indescifrables al reiniciar el proceso (un usuario con MFA ya confirmado
+// perdería la capacidad de completar el login hasta deshabilitar y volver
+// a habilitar MFA).
+func construirCifradorSecretosMFA(cfg configuracion.Config) *cripto.CifradorSecretosAESGCM {
+	llaveCruda := cfg.IdentidadLlaveCifradoMFA
+	if llaveCruda == "" {
+		if cfg.EntornoApp == "production" {
+			log.Fatalf("api: IDENTIDAD_LLAVE_CIFRADO_MFA no está definida en APP_ENV=production — un servicio " +
+				"que no puede cifrar/descifrar secretos TOTP no tiene nada que hacer sirviendo tráfico (docs/design/otp-mfa.md §2.2).")
+		}
+		efimera, err := cripto.GenerarLlaveCifradoMFAEfimera()
+		if err != nil {
+			log.Fatalf("api: no se pudo generar la llave de cifrado de MFA efímera: %v", err)
+		}
+		llaveCruda = efimera
+		log.Println("api: ALERTA — IDENTIDAD_LLAVE_CIFRADO_MFA no está definida, usando una llave AES-256 efímera " +
+			"generada en memoria. Todo secreto TOTP cifrado con ella queda indescifrable al reiniciar el proceso. " +
+			"No usar así en producción (docs/design/otp-mfa.md §2.2).")
+	}
+	llave, err := cripto.DecodificarLlaveCifradoMFA(llaveCruda)
+	if err != nil {
+		log.Fatalf("api: IDENTIDAD_LLAVE_CIFRADO_MFA inválida: %v", err)
+	}
+	cifrador, err := cripto.NuevoCifradorSecretosAESGCM(llave)
+	if err != nil {
+		log.Fatalf("api: no se pudo construir el cifrador de secretos MFA: %v", err)
+	}
+	return cifrador
 }
 
 // construirEvaluadorConfianzaIdentidad decide entre EvaluadorConfianzaNoOp

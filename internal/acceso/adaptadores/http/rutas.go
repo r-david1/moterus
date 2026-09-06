@@ -68,6 +68,25 @@ func RegistrarRutas(app *fiber.App, m *ManejadorAcceso, validador puertos.Valida
 	}, m.IniciarSesion)
 
 	huma.Register(api, huma.Operation{
+		OperationID: "acceso-completar-segundo-factor",
+		Method:      http.MethodPost,
+		Path:        prefijo + "/sesiones/segundo-factor",
+		Summary:     "Completar el login con el segundo factor (MFA)",
+		Description: "Paso 2 del login cuando POST /acceso/sesiones devolvió token_step_up (§3.6 del diseño " +
+			"otp-mfa.md). Sin Bearer: la credencial de este endpoint es el propio token de step-up del cuerpo " +
+			"(TTL de 5 minutos, INV-MFA-03/04) — nunca un token de acceso normal, que el validador de step-up " +
+			"rechaza explícitamente. Verifica el código (TOTP o de respaldo) contra Identidad y, si es válido, " +
+			"emite la sesión completa con amr=[\"pwd\",\"otp\"]. 401 único para token inválido/expirado, " +
+			"Confianza denegado o código incorrecto (INV-MFA-08: no se distingue el motivo).",
+		DefaultStatus: http.StatusCreated,
+		Tags:          []string{"Acceso", "MFA"},
+		Metadata: map[string]any{
+			"x-auth-nivel": "publico-token-step-up-en-cuerpo",
+			"x-rate-limit": "ADR 0018/docs/design/otp-mfa.md §7: EvaluadorConfianza, accion=verificar_otp (5/15min por usuario, 20/15min por IP) — oráculo de fuerza bruta sobre un código de 6 dígitos.",
+		},
+	}, m.CompletarSegundoFactor)
+
+	huma.Register(api, huma.Operation{
 		OperationID: "acceso-renovar-sesion",
 		Method:      http.MethodPost,
 		Path:        prefijo + "/sesiones/renovaciones",

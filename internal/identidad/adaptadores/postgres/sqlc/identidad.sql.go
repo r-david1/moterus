@@ -11,6 +11,49 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const actualizarFactorMFA = `-- name: ActualizarFactorMFA :one
+UPDATE factores_mfa
+SET
+    secreto_cifrado = $2,
+    confirmado = $3,
+    activo = $4,
+    confirmado_en = $5
+WHERE id = $1
+RETURNING id, usuario_id, tipo, secreto_cifrado, confirmado, activo, creado_en, confirmado_en
+`
+
+type ActualizarFactorMFAParams struct {
+	ID             pgtype.UUID        `json:"id"`
+	SecretoCifrado []byte             `json:"secreto_cifrado"`
+	Confirmado     bool               `json:"confirmado"`
+	Activo         bool               `json:"activo"`
+	ConfirmadoEn   pgtype.Timestamptz `json:"confirmado_en"`
+}
+
+// creado_en y usuario_id nunca cambian tras la creación (INV-MFA-01: un
+// FactorMFA no cambia de dueño ni de fecha de alta).
+func (q *Queries) ActualizarFactorMFA(ctx context.Context, arg ActualizarFactorMFAParams) (FactoresMfa, error) {
+	row := q.db.QueryRow(ctx, actualizarFactorMFA,
+		arg.ID,
+		arg.SecretoCifrado,
+		arg.Confirmado,
+		arg.Activo,
+		arg.ConfirmadoEn,
+	)
+	var i FactoresMfa
+	err := row.Scan(
+		&i.ID,
+		&i.UsuarioID,
+		&i.Tipo,
+		&i.SecretoCifrado,
+		&i.Confirmado,
+		&i.Activo,
+		&i.CreadoEn,
+		&i.ConfirmadoEn,
+	)
+	return i, err
+}
+
 const actualizarUsuario = `-- name: ActualizarUsuario :one
 UPDATE usuarios
 SET
@@ -53,6 +96,67 @@ func (q *Queries) ActualizarUsuario(ctx context.Context, arg ActualizarUsuarioPa
 		&i.CreadoEn,
 		&i.ActualizadoEn,
 		&i.UltimoAccesoEn,
+	)
+	return i, err
+}
+
+const contarFactoresMFAConfirmadosActivosDeUsuario = `-- name: ContarFactoresMFAConfirmadosActivosDeUsuario :one
+SELECT count(*) FROM factores_mfa
+WHERE usuario_id = $1 AND confirmado = true AND activo = true
+`
+
+func (q *Queries) ContarFactoresMFAConfirmadosActivosDeUsuario(ctx context.Context, usuarioID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, contarFactoresMFAConfirmadosActivosDeUsuario, usuarioID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const crearFactorMFA = `-- name: CrearFactorMFA :one
+
+INSERT INTO factores_mfa (
+    id, usuario_id, tipo, secreto_cifrado, confirmado, activo, creado_en, confirmado_en
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8
+)
+RETURNING id, usuario_id, tipo, secreto_cifrado, confirmado, activo, creado_en, confirmado_en
+`
+
+type CrearFactorMFAParams struct {
+	ID             pgtype.UUID        `json:"id"`
+	UsuarioID      pgtype.UUID        `json:"usuario_id"`
+	Tipo           string             `json:"tipo"`
+	SecretoCifrado []byte             `json:"secreto_cifrado"`
+	Confirmado     bool               `json:"confirmado"`
+	Activo         bool               `json:"activo"`
+	CreadoEn       pgtype.Timestamptz `json:"creado_en"`
+	ConfirmadoEn   pgtype.Timestamptz `json:"confirmado_en"`
+}
+
+// Queries de factores_mfa/codigos_respaldo_mfa. Implementan
+// identidad/puertos.RepositorioFactoresMFA (docs/design/otp-mfa.md §2.2,
+// ADR 0037/0040, migración 000015).
+func (q *Queries) CrearFactorMFA(ctx context.Context, arg CrearFactorMFAParams) (FactoresMfa, error) {
+	row := q.db.QueryRow(ctx, crearFactorMFA,
+		arg.ID,
+		arg.UsuarioID,
+		arg.Tipo,
+		arg.SecretoCifrado,
+		arg.Confirmado,
+		arg.Activo,
+		arg.CreadoEn,
+		arg.ConfirmadoEn,
+	)
+	var i FactoresMfa
+	err := row.Scan(
+		&i.ID,
+		&i.UsuarioID,
+		&i.Tipo,
+		&i.SecretoCifrado,
+		&i.Confirmado,
+		&i.Activo,
+		&i.CreadoEn,
+		&i.ConfirmadoEn,
 	)
 	return i, err
 }
@@ -120,6 +224,94 @@ WHERE usuario_id = $1
 func (q *Queries) EliminarTokenVerificacionCorreoPorUsuario(ctx context.Context, usuarioID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, eliminarTokenVerificacionCorreoPorUsuario, usuarioID)
 	return err
+}
+
+const obtenerCodigosRespaldoDeFactor = `-- name: ObtenerCodigosRespaldoDeFactor :many
+SELECT id, factor_id, hash_codigo, usado_en FROM codigos_respaldo_mfa WHERE factor_id = $1
+`
+
+func (q *Queries) ObtenerCodigosRespaldoDeFactor(ctx context.Context, factorID pgtype.UUID) ([]CodigosRespaldoMfa, error) {
+	rows, err := q.db.Query(ctx, obtenerCodigosRespaldoDeFactor, factorID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CodigosRespaldoMfa
+	for rows.Next() {
+		var i CodigosRespaldoMfa
+		if err := rows.Scan(
+			&i.ID,
+			&i.FactorID,
+			&i.HashCodigo,
+			&i.UsadoEn,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const obtenerFactorMFAPorID = `-- name: ObtenerFactorMFAPorID :one
+SELECT id, usuario_id, tipo, secreto_cifrado, confirmado, activo, creado_en, confirmado_en FROM factores_mfa WHERE id = $1
+`
+
+func (q *Queries) ObtenerFactorMFAPorID(ctx context.Context, id pgtype.UUID) (FactoresMfa, error) {
+	row := q.db.QueryRow(ctx, obtenerFactorMFAPorID, id)
+	var i FactoresMfa
+	err := row.Scan(
+		&i.ID,
+		&i.UsuarioID,
+		&i.Tipo,
+		&i.SecretoCifrado,
+		&i.Confirmado,
+		&i.Activo,
+		&i.CreadoEn,
+		&i.ConfirmadoEn,
+	)
+	return i, err
+}
+
+const obtenerFactoresMFAConfirmadosActivosDeUsuario = `-- name: ObtenerFactoresMFAConfirmadosActivosDeUsuario :many
+SELECT id, usuario_id, tipo, secreto_cifrado, confirmado, activo, creado_en, confirmado_en FROM factores_mfa
+WHERE usuario_id = $1 AND confirmado = true AND activo = true
+`
+
+// "Confirmados", en este puerto, significa SIEMPRE confirmado=true AND
+// activo=true (ver el comentario de RepositorioFactoresMFA en
+// identidad/puertos/salida.go y la nota de cabecera de la migración
+// 000015): un factor deshabilitado sigue confirmado=true para siempre
+// (hecho histórico) pero deja de contar aquí.
+func (q *Queries) ObtenerFactoresMFAConfirmadosActivosDeUsuario(ctx context.Context, usuarioID pgtype.UUID) ([]FactoresMfa, error) {
+	rows, err := q.db.Query(ctx, obtenerFactoresMFAConfirmadosActivosDeUsuario, usuarioID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []FactoresMfa
+	for rows.Next() {
+		var i FactoresMfa
+		if err := rows.Scan(
+			&i.ID,
+			&i.UsuarioID,
+			&i.Tipo,
+			&i.SecretoCifrado,
+			&i.Confirmado,
+			&i.Activo,
+			&i.CreadoEn,
+			&i.ConfirmadoEn,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const obtenerTokenVerificacionCorreoPorHash = `-- name: ObtenerTokenVerificacionCorreoPorHash :one
@@ -213,6 +405,34 @@ func (q *Queries) RegistrarAccesoUsuario(ctx context.Context, arg RegistrarAcces
 		&i.UltimoAccesoEn,
 	)
 	return i, err
+}
+
+const upsertCodigoRespaldoMFA = `-- name: UpsertCodigoRespaldoMFA :exec
+INSERT INTO codigos_respaldo_mfa (
+    factor_id, hash_codigo, usado_en
+) VALUES (
+    $1, $2, $3
+)
+ON CONFLICT (hash_codigo) DO UPDATE
+SET usado_en = EXCLUDED.usado_en
+`
+
+type UpsertCodigoRespaldoMFAParams struct {
+	FactorID   pgtype.UUID        `json:"factor_id"`
+	HashCodigo string             `json:"hash_codigo"`
+	UsadoEn    pgtype.Timestamptz `json:"usado_en"`
+}
+
+// codigos_respaldo_mfa tiene DELETE revocado para rol_aplicacion (000015:
+// "un código de respaldo consumido queda marcado con usado_en, no se
+// borra"), así que RepositorioFactoresMFA.Guardar nunca borra e inserta de
+// nuevo la colección: hace upsert por hash_codigo (único en todo el
+// sistema) tanto para la creación inicial (ConfirmarFactorMFA, 10 filas con
+// usado_en NULL) como para marcar un código consumido después
+// (VerificarOTP/DeshabilitarMFA).
+func (q *Queries) UpsertCodigoRespaldoMFA(ctx context.Context, arg UpsertCodigoRespaldoMFAParams) error {
+	_, err := q.db.Exec(ctx, upsertCodigoRespaldoMFA, arg.FactorID, arg.HashCodigo, arg.UsadoEn)
+	return err
 }
 
 const upsertTokenVerificacionCorreo = `-- name: UpsertTokenVerificacionCorreo :exec

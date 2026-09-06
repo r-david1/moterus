@@ -48,6 +48,10 @@ func mapearErrorDominio(ctx context.Context, err error) error {
 		errIDUsuarioInvalido     *dominio.ErrIDUsuarioInvalido
 		errTokenInvalido         *dominio.ErrTokenVerificacionInvalido
 		errTokenExpirado         *dominio.ErrTokenVerificacionExpirado
+		errFactorMFANoEncontrado *dominio.ErrFactorMFANoEncontrado
+		errFactorMFAYaConfirmado *dominio.ErrFactorMFAYaConfirmado
+		errCodigoOTPInvalido     *dominio.ErrCodigoOTPInvalido
+		errLimiteFactoresMFA     *dominio.ErrLimiteFactoresMFAExcedido
 	)
 
 	switch {
@@ -132,6 +136,21 @@ func mapearErrorDominio(ctx context.Context, err error) error {
 
 	case errors.As(err, &errTokenInvalido):
 		return huma.Error404NotFound("token de verificación inválido")
+
+	case errors.As(err, &errFactorMFANoEncontrado):
+		return huma.Error404NotFound("factor MFA no encontrado")
+
+	case errors.As(err, &errFactorMFAYaConfirmado):
+		return huma.Error409Conflict("el factor MFA ya está confirmado")
+
+	case errors.As(err, &errCodigoOTPInvalido):
+		// INV-MFA-08: el mismo 422 cubre tanto un código TOTP/de respaldo
+		// incorrecto como "el sujeto no tiene ningún factor confirmado" en
+		// DeshabilitarMFA — no se distingue por status ni por mensaje.
+		return huma.Error422UnprocessableEntity("código de verificación inválido")
+
+	case errors.As(err, &errLimiteFactoresMFA):
+		return huma.Error409Conflict("límite de factores MFA excedido")
 
 	default:
 		// Nunca se expone el error interno al cliente (podría filtrar

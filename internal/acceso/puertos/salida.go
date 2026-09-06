@@ -290,3 +290,22 @@ type EmisorTokenStepUp interface {
 	Emitir(ctx context.Context, idUsuario string, motivoStepUp string, ahora time.Time) (TokenStepUp, error)
 	Validar(ctx context.Context, tokenCompacto string) (ClaimsStepUp, error)
 }
+
+// VerificadorSegundoFactor es el puerto de salida que
+// CompletarSegundoFactorCasoDeUso (acceso/aplicacion) consume para
+// verificar el código OTP presentado contra Identidad (§3.6 del diseño
+// otp-mfa.md). Implementado por el ACL
+// acceso/adaptadores/identidad.VerificadorOTP sobre
+// identidad/puertos.VerificadorOTP — mismo patrón que
+// AutenticadorIdentidad/ConsultorEstadoSujeto: tipos propios de Acceso a
+// ambos lados, acceso/aplicacion nunca ve un tipo de Identidad
+// (INV-ACC-19).
+//
+// Nota de reubicación: esta interfaz vivió temporalmente declarada dentro
+// de acceso/aplicacion/completar_segundo_factor.go (con la misma forma que
+// tiene aquí) mientras acceso/puertos estaba cerrado para ese encargo. Se
+// trasladó aquí, junto a AutenticadorIdentidad/ConsultorEstadoSujeto, sin
+// cambiar su forma.
+type VerificadorSegundoFactor interface {
+	Verificar(ctx context.Context, idUsuario string, codigo string, origen dominio.OrigenSolicitud) (bool, error)
+}

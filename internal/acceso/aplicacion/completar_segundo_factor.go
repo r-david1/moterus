@@ -9,32 +9,11 @@ import (
 
 // accionConfianzaVerificarOTP es la acción de Confianza para el paso de
 // step-up (§3.6/§7 del diseño otp-mfa.md, rate limit 5/15min por usuario,
-// 20/15min por IP). confianza/dominio/accion.go (contexto Confianza) no
-// declara todavía una constante AccionVerificarOTP: extenderla es trabajo
-// de un agente futuro sobre Confianza, fuera del alcance de este cambio
-// (que solo toca Identidad/Acceso). Se usa el literal que el diseño ya fijó.
+// 20/15min por IP). acceso/aplicacion nunca importa confianza/dominio
+// directamente (mismo criterio que renovar_sesion.go/cerrar_sesion.go, que
+// tampoco lo importan): el literal debe coincidir textualmente con
+// confianza/dominio.AccionVerificarOTP.
 const accionConfianzaVerificarOTP = "verificar_otp"
-
-// VerificadorSegundoFactor es el puerto de salida que
-// CompletarSegundoFactorCasoDeUso consume para verificar el código OTP
-// presentado contra Identidad (§3.6 del diseño otp-mfa.md).
-//
-// Nota de ubicación (gap reportado, no resuelto en silencio): por forma y
-// criterio (tipos propios de Acceso a ambos lados, implementado por un ACL
-// sobre identidad/puertos.VerificadorOTP en acceso/adaptadores/identidad/)
-// esta interfaz debería vivir junto a AutenticadorIdentidad/
-// ConsultorEstadoSujeto en acceso/puertos/salida.go — exactamente el mismo
-// patrón que ya usa este contexto para cruzar hacia Identidad sin que
-// acceso/aplicacion importe jamás un tipo de identidad/dominio ni
-// identidad/puertos (INV-ACC-19). Se declara aquí, en la capa de
-// aplicación, únicamente porque acceso/puertos está señalado como cerrado
-// para este encargo. Quien lo posea debe trasladarla a salida.go sin
-// cambiar su forma, e implementar el ACL correspondiente (el "método más"
-// que el diseño ya anticipa para acceso/adaptadores/identidad/) — ninguno
-// de los dos es trabajo de esta capa.
-type VerificadorSegundoFactor interface {
-	Verificar(ctx context.Context, idUsuario string, codigo string, origen dominio.OrigenSolicitud) (bool, error)
-}
 
 // ComandoCompletarSegundoFactor transporta la entrada de
 // CompletarSegundoFactorCasoDeUso (§3.6 del diseño otp-mfa.md). No existe un
@@ -59,7 +38,7 @@ type ComandoCompletarSegundoFactor struct {
 type CompletarSegundoFactorCasoDeUso struct {
 	emisorStepUp puertos.EmisorTokenStepUp
 	confianza    puertos.EvaluadorConfianza
-	verificador  VerificadorSegundoFactor
+	verificador  puertos.VerificadorSegundoFactor
 	// emisorSesion es el mismo caso de uso IniciarSesion ya ensamblado: se
 	// reutiliza únicamente por su método interno compartido
 	// emitirSesionCompleta (mismo paquete aplicacion, método no exportado),
@@ -76,7 +55,7 @@ type CompletarSegundoFactorCasoDeUso struct {
 func NuevoCompletarSegundoFactorCasoDeUso(
 	emisorStepUp puertos.EmisorTokenStepUp,
 	confianza puertos.EvaluadorConfianza,
-	verificador VerificadorSegundoFactor,
+	verificador puertos.VerificadorSegundoFactor,
 	emisorSesion *IniciarSesionCasoDeUso,
 ) *CompletarSegundoFactorCasoDeUso {
 	return &CompletarSegundoFactorCasoDeUso{
