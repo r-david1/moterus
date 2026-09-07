@@ -108,9 +108,10 @@ procedimiento de "Agregar una acción nueva" de arriba. Ver
 | `sala_espera.abierta` | `sala_espera` | Se abrió una cola de acceso virtual sobre una ruta protegida, con su ritmo de admisión y capacidad iniciales. | `SalaDeEsperaAbierta` | `exito` |
 | `sala_espera.ritmo_cambiado` | `sala_espera` | Se cambió el ritmo de admisión de una sala abierta durante el evento; incluye el cursor y la longitud de cola al momento del cambio — el dato que un post-mortem del evento va a pedir primero. | `RitmoDeAdmisionCambiado` | `exito` |
 | `sala_espera.cerrada` | `sala_espera` | La sala pasó a `drenando` o `cerrada` (distinguidas por `detalles.destino`); incluye los totales de ingresos y admitidos del evento. | `SalaDeEsperaCerrada` | `exito` |
+| `origen.nuevo` | `origen` | Una cuenta autenticó con éxito desde una huella de dispositivo que no estaba en su perfil de orígenes conocidos. Se registra una sola vez por par (cuenta, dispositivo) y solo si la cuenta ya tenía al menos un origen conocido. | `OrigenNuevoObservado` | `exito` |
 
 3 eventos de dominio (`internal/confianza/dominio/eventos.go`) mapean 1:1 a
-estas 3 acciones. Sembradas por la migración
+las 3 acciones de colas de acceso virtual. Sembradas por la migración
 `db/migraciones/000018_acciones_auditoria_confianza.up.sql`, separada de
 `000017_crear_salas_espera.up.sql` (que solo crea la tabla) siguiendo el
 mismo criterio que ya usaron Acceso (000006/000007), Tenencia
@@ -120,6 +121,15 @@ ni los ingresos, ni las consultas de turno, ni los reclamos se auditan
 (INV-COLA-11, mismo razonamiento que INV-TEN-25) — solo las mutaciones del
 ciclo de vida de una sala (abrir, cambiar ritmo, drenar, cerrar). Ver
 `docs/design/colas-virtuales.md`, secciones 1.7 y 6.1.
+
+`origen.nuevo` es la ÚNICA acción del reconocimiento de origen
+(INV-RIES-13, tercera extensión de Confianza): sembrada por
+`db/migraciones/000019_acciones_auditoria_riesgo.up.sql`, sin tabla ni
+`GRANT` propios (no crea nada nuevo que privilegiar, ver ADR 0050). Las
+denegaciones por riesgo de origen viajan como `Motivo` dentro de
+`usuario.login`/`denegado`, tal como ADR 0018 ya fijó para los motivos de
+rate limiting; las evaluaciones no se auditan por volumen. Ver
+`docs/design/fingerprinting-comportamiento.md`, secciones 1.6 y 5.4.
 
 ## Otros contextos
 
