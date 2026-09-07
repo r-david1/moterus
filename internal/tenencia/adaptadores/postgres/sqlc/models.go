@@ -142,6 +142,28 @@ type Organizacione struct {
 	MotivoEstado  pgtype.Text        `json:"motivo_estado"`
 }
 
+// Configuracion operativa de las colas de acceso virtual (contexto Confianza). El estado efimero de la cola vive en Redis; esta tabla es la fuente de verdad duradera y auditable (INV-COLA-12).
+type SalasEspera struct {
+	ID                    pgtype.UUID        `json:"id"`
+	Alias                 string             `json:"alias"`
+	AlcanceTipo           string             `json:"alcance_tipo"`
+	AlcanceOrganizacionID pgtype.UUID        `json:"alcance_organizacion_id"`
+	RutaProtegida         string             `json:"ruta_protegida"`
+	Estado                string             `json:"estado"`
+	RitmoAdmision         int32              `json:"ritmo_admision"`
+	CapacidadMaximaCola   int64              `json:"capacidad_maxima_cola"`
+	VentanaReclamoMs      int32              `json:"ventana_reclamo_ms"`
+	ModoDegradado         string             `json:"modo_degradado"`
+	CursorBase            int64              `json:"cursor_base"`
+	RelojDesde            pgtype.Timestamptz `json:"reloj_desde"`
+	VersionConfig         int64              `json:"version_config"`
+	CreadaPor             pgtype.UUID        `json:"creada_por"`
+	CreadaEn              pgtype.Timestamptz `json:"creada_en"`
+	ActualizadaEn         pgtype.Timestamptz `json:"actualizada_en"`
+	AbiertaEn             pgtype.Timestamptz `json:"abierta_en"`
+	CerradaEn             pgtype.Timestamptz `json:"cerrada_en"`
+}
+
 type Sesione struct {
 	ID                  pgtype.UUID        `json:"id"`
 	UsuarioID           pgtype.UUID        `json:"usuario_id"`
