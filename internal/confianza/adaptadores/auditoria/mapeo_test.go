@@ -113,6 +113,90 @@ func TestMapearEvento_SalaDeEsperaAbierta_DetallesCompletos(t *testing.T) {
 	}
 }
 
+// TestMapearEvento_OrigenNuevoObservado_DetallesCompletos cubre el `case`
+// agregado por la extensión de reconocimiento de origen (§1.6 de
+// fingerprinting-comportamiento.md).
+func TestMapearEvento_OrigenNuevoObservado_DetallesCompletos(t *testing.T) {
+	ahora := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+	senales := []dominio.SenalRiesgo{dominio.SenalDispositivoDesconocido, dominio.SenalRedDesconocida}
+	puntaje := dominio.NuevoPuntajeRiesgo(0.65)
+	pol := dominio.PoliticaRiesgoPorDefecto()
+	nivel := puntaje.Nivel(pol)
+
+	ev := dominio.NuevoOrigenNuevoObservado("usuario-123", senales, puntaje, nivel, dominio.ModoRiesgoObservar, 3, ahora)
+
+	fila, reconocido := mapearEvento(ev)
+	if !reconocido {
+		t.Fatal("OrigenNuevoObservado no fue reconocido")
+	}
+	if fila.accion != "origen.nuevo" {
+		t.Fatalf("accion = %q, esperado \"origen.nuevo\"", fila.accion)
+	}
+	if fila.recurso != recursoOrigen {
+		t.Fatalf("recurso = %q, esperado %q", fila.recurso, recursoOrigen)
+	}
+	if fila.usuarioID != "usuario-123" {
+		t.Fatalf("usuarioID = %q, esperado \"usuario-123\"", fila.usuarioID)
+	}
+	if fila.resultado != resultadoExito {
+		t.Fatalf("resultado = %q, esperado %q", fila.resultado, resultadoExito)
+	}
+	if fila.detalles == nil {
+		t.Fatal("detalles no puede ser nil: json.Marshal(nil) produce \"null\", que viola el CHECK de la tabla auditoria")
+	}
+
+	serializado, err := json.Marshal(fila.detalles)
+	if err != nil {
+		t.Fatalf("no se pudo serializar detalles: %v", err)
+	}
+	if string(serializado) == "null" {
+		t.Fatal("detalles serializó a \"null\": violaría el CHECK jsonb_typeof(detalles)='object'")
+	}
+	if fila.detalles["origenes_conocidos"] != 3 {
+		t.Fatalf("detalles[origenes_conocidos] = %v, esperado 3", fila.detalles["origenes_conocidos"])
+	}
+	if fila.detalles["modo"] != "observar" {
+		t.Fatalf("detalles[modo] = %v, esperado \"observar\"", fila.detalles["modo"])
+	}
+}
+
+// TestMapearEvento_OrigenNuevoObservado_SenalesVaciasNoProducenDetallesNulos
+// cubre explícitamente el caso límite que el bug de OTP/MFA hizo evidente
+// (identidad/adaptadores/auditoria/mapeo.go, caso ContrasenaCambiada): aunque
+// Senales llegara vacío o nil, detalles nunca debe degradar a un mapa nil ni
+// a un slice serializado como "null".
+func TestMapearEvento_OrigenNuevoObservado_SenalesVaciasNoProducenDetallesNulos(t *testing.T) {
+	ahora := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+	pol := dominio.PoliticaRiesgoPorDefecto()
+	puntaje := dominio.NuevoPuntajeRiesgo(0)
+	nivel := puntaje.Nivel(pol)
+
+	ev := dominio.NuevoOrigenNuevoObservado("usuario-456", nil, puntaje, nivel, dominio.ModoRiesgoObservar, 1, ahora)
+
+	fila, reconocido := mapearEvento(ev)
+	if !reconocido {
+		t.Fatal("OrigenNuevoObservado no fue reconocido")
+	}
+	if fila.detalles == nil {
+		t.Fatal("detalles no puede ser nil")
+	}
+	senales, ok := fila.detalles["senales"].([]string)
+	if !ok {
+		t.Fatalf("detalles[senales] tiene tipo inesperado: %T", fila.detalles["senales"])
+	}
+	if senales == nil {
+		t.Fatal("detalles[senales] no puede ser un slice nil: serializaría a \"null\" en vez de \"[]\"")
+	}
+
+	serializado, err := json.Marshal(fila.detalles)
+	if err != nil {
+		t.Fatalf("no se pudo serializar detalles: %v", err)
+	}
+	if string(serializado) == "null" {
+		t.Fatal("detalles serializó a \"null\"")
+	}
+}
+
 func TestMapearEvento_EventoNoReconocido(t *testing.T) {
 	_, reconocido := mapearEvento(eventoDeMentira{})
 	if reconocido {

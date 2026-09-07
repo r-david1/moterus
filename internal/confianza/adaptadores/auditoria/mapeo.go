@@ -4,11 +4,14 @@ import (
 	"github.com/r-david1/moterus/internal/confianza/dominio"
 )
 
-// recursoSalaEspera es el único recurso que emite Confianza hoy (tabla del
-// §9 del diseño, docs/catalogos/acciones-auditoria.md sección "Confianza"):
-// las tres acciones de la migración 000018 afectan siempre al recurso
-// "sala_espera".
+// recursoSalaEspera es el recurso que emiten las tres acciones de la
+// migración 000018 (colas de acceso virtual): siempre "sala_espera".
 const recursoSalaEspera = "sala_espera"
+
+// recursoOrigen es el recurso de la única acción de la migración 000019
+// (reconocimiento de origen, §1.6 de fingerprinting-comportamiento.md):
+// siempre "origen".
+const recursoOrigen = "origen"
 
 // resultadoExito es el único resultado que producen los tres eventos de
 // dominio de Confianza (tabla 1.7 del diseño): abrir, cambiar ritmo y
@@ -41,12 +44,14 @@ type filaAuditoria struct {
 // (secuencia, hash_anterior, hash_actual) NO se calcula aquí: lo asigna el
 // trigger auditoria_asignar_cadena en la base de datos.
 //
-// Ninguno de los tres eventos de dominio de Confianza transporta quién
-// ejecutó la mutación (SalaDeEspera no guarda un "operador actual" como
-// campo de sus eventos, a diferencia de otros contextos): usuarioID queda
-// siempre vacío (NULL en la fila de auditoria) para los tres casos. Es una
-// limitación heredada del dominio ya cerrado, igual que la nota equivalente
-// en identidad/adaptadores/auditoria/mapeo.go.
+// Ninguno de los tres eventos de la sala de espera transporta quién ejecutó
+// la mutación (SalaDeEspera no guarda un "operador actual" como campo de sus
+// eventos, a diferencia de otros contextos): usuarioID queda siempre vacío
+// (NULL en la fila de auditoria) para esos tres casos. Es una limitación
+// heredada del dominio ya cerrado, igual que la nota equivalente en
+// identidad/adaptadores/auditoria/mapeo.go. OrigenNuevoObservado es la
+// excepción: sí lleva IDUsuario (la cuenta que autenticó), así que su fila
+// de auditoria SÍ puebla usuarioID.
 func mapearEvento(e dominio.EventoDominio) (filaAuditoria, bool) {
 	switch ev := e.(type) {
 	case dominio.SalaDeEsperaAbierta:
@@ -89,6 +94,41 @@ func mapearEvento(e dominio.EventoDominio) (filaAuditoria, bool) {
 				"destino":           ev.Destino,
 				"ingresos_totales":  ev.IngresosTotales,
 				"admitidos_totales": ev.AdmitidosTotales,
+			},
+		}, true
+
+	case dominio.OrigenNuevoObservado:
+		// Senales nunca debería llegar nil (§1.6 del diseño: el evento solo
+		// se construye cuando ya hubo al menos una señal), pero se normaliza
+		// de todas formas: un slice nil serializa a JSON "null", no "[]", y
+		// aunque eso no viola el CHECK de la tabla (que exige que el propio
+		// `detalles` sea un objeto, no que sus valores lo sean), un
+		// respondedor de incidentes que filtre por "senales contiene X" no
+		// debería tener que distinguir "null" de "[]" en la misma columna.
+		senales := ev.Senales
+		if senales == nil {
+			senales = []string{}
+		}
+		return filaAuditoria{
+			accion:    "origen.nuevo",
+			recurso:   recursoOrigen,
+			recursoID: ev.IDUsuario,
+			resultado: resultadoExito,
+			usuarioID: ev.IDUsuario,
+			// detalles no puede quedar como el mapa nil por defecto: la
+			// migración 000002 exige jsonb_typeof(detalles) = 'object', y
+			// json.Marshal(map[string]any(nil)) serializa "null", no "{}"
+			// (bug real, encontrado durante la verificación de OTP/MFA —
+			// ver identidad/adaptadores/auditoria/mapeo.go, caso
+			// ContrasenaCambiada). Por eso se construye siempre el literal
+			// completo, nunca una variable `var detalles map[string]any`
+			// que dependa de un `if` para poblarse.
+			detalles: map[string]any{
+				"senales":            senales,
+				"puntaje":            ev.Puntaje,
+				"nivel":              ev.Nivel,
+				"modo":               ev.Modo,
+				"origenes_conocidos": ev.OrigenesConocidos,
 			},
 		}, true
 
