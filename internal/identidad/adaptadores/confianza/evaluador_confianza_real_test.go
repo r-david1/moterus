@@ -2,6 +2,9 @@ package confianza_test
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"testing"
 	"time"
 
@@ -35,6 +38,18 @@ func (r *riesgoFalso) RegistrarResultado(_ context.Context, res confianzapuertos
 func origenDePrueba(t *testing.T, ip string) iddominio.OrigenSolicitud {
 	t.Helper()
 	origen, err := iddominio.NuevoOrigenSolicitud(ip, "agente-de-prueba", "", "id-solicitud-de-prueba")
+	if err != nil {
+		t.Fatalf("no se pudo construir OrigenSolicitud: %v", err)
+	}
+	return origen
+}
+
+// origenConHuellaDePrueba es como origenDePrueba pero con una huella de
+// dispositivo no vacía, para los tests del reconocimiento de origen
+// (docs/design/fingerprinting-comportamiento.md §8).
+func origenConHuellaDePrueba(t *testing.T, ip, huella string) iddominio.OrigenSolicitud {
+	t.Helper()
+	origen, err := iddominio.NuevoOrigenSolicitud(ip, "agente-de-prueba", huella, "id-solicitud-de-prueba")
 	if err != nil {
 		t.Fatalf("no se pudo construir OrigenSolicitud: %v", err)
 	}
@@ -117,4 +132,90 @@ func TestRegistrarResultado_traduce(t *testing.T) {
 	if !riesgo.resultadoRecibido.Exitoso {
 		t.Errorf("Exitoso no se tradujo")
 	}
+}
+
+// TestEvaluar_pueblaHuellaDispositivo cubre el campo aditivo de
+// confianza/puertos.Solicitud (§2.1 y §8 del diseño de reconocimiento de
+// origen): el ACL debe pasar la huella que ya trae identidad/dominio.
+// OrigenSolicitud, sin inventar una firma nueva.
+func TestEvaluar_pueblaHuellaDispositivo(t *testing.T) {
+	riesgo := &riesgoFalso{}
+	acl := identidadconfianza.NuevoEvaluadorConfianzaReal(riesgo)
+
+	_, err := acl.Evaluar(context.Background(), puertos.SolicitudEvaluacion{
+		Accion:            "login",
+		CorreoNormalizado: "ana@ejemplo.com",
+		Origen:            origenConHuellaDePrueba(t, "203.0.113.9", "huella-cruda-123"),
+	})
+	if err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+	if riesgo.solicitudRecibida.HuellaDispositivo != "huella-cruda-123" {
+		t.Errorf("HuellaDispositivo = %q, esperado huella-cruda-123", riesgo.solicitudRecibida.HuellaDispositivo)
+	}
+}
+
+// TestRegistrarResultado_pueblaCamposAditivosDeReconocimientoDeOrigen cubre
+// HuellaDispositivo, IDUsuario e IDSolicitud (§2.1 y §8 del diseño de
+// reconocimiento de origen): los tres ya llegaban al ACL vía
+// puertos.ResultadoIntento (UsuarioID) y Origen (huella, id de solicitud),
+// y hasta esta extensión se descartaban al traducir.
+func TestRegistrarResultado_pueblaCamposAditivosDeReconocimientoDeOrigen(t *testing.T) {
+	riesgo := &riesgoFalso{}
+	acl := identidadconfianza.NuevoEvaluadorConfianzaReal(riesgo)
+
+	err := acl.RegistrarResultado(context.Background(), puertos.ResultadoIntento{
+		Accion:            "login",
+		CorreoNormalizado: "ana@ejemplo.com",
+		Origen:            origenConHuellaDePrueba(t, "203.0.113.9", "huella-cruda-456"),
+		Exitoso:           true,
+		UsuarioID:         "usuario-789",
+	})
+	if err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+	if riesgo.resultadoRecibido.HuellaDispositivo != "huella-cruda-456" {
+		t.Errorf("HuellaDispositivo = %q, esperado huella-cruda-456", riesgo.resultadoRecibido.HuellaDispositivo)
+	}
+	if riesgo.resultadoRecibido.IDUsuario != "usuario-789" {
+		t.Errorf("IDUsuario = %q, esperado usuario-789", riesgo.resultadoRecibido.IDUsuario)
+	}
+	if riesgo.resultadoRecibido.IDSolicitud != "id-solicitud-de-prueba" {
+		t.Errorf("IDSolicitud = %q, esperado id-solicitud-de-prueba", riesgo.resultadoRecibido.IDSolicitud)
+	}
+}
+
+// TestEvaluadorConfianzaReal_NuncaExponeCamposDeRiesgo custodia INV-RIES-09
+// (docs/design/fingerprinting-comportamiento.md §4 y §8): el archivo fuente
+// del ACL nunca debe mencionar los identificadores PuntajeRiesgo,
+// NivelRiesgo ni SenalesDeRiesgo. Ninguno de los tres puede llegar a
+// identidad/puertos.DecisionConfianza y, de ahí, a una respuesta HTTP. Un
+// test de reflexión sobre DecisionConfianza no alcanzaría por sí solo: hoy
+// el tipo ni siquiera declara esos campos, así que el peligro real es que
+// alguien los agregue Y los mapee en el mismo cambio; este test falla en
+// cuanto aparece la mención en el código fuente del ACL, sin esperar a que
+// el tipo cambie.
+func TestEvaluadorConfianzaReal_NuncaExponeCamposDeRiesgo(t *testing.T) {
+	const archivo = "evaluador_confianza_real.go"
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, archivo, nil, 0)
+	if err != nil {
+		t.Fatalf("no se pudo parsear %s: %v", archivo, err)
+	}
+	prohibidos := map[string]bool{
+		"PuntajeRiesgo":   true,
+		"NivelRiesgo":     true,
+		"SenalesDeRiesgo": true,
+	}
+	ast.Inspect(f, func(n ast.Node) bool {
+		ident, ok := n.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		if prohibidos[ident.Name] {
+			pos := fset.Position(ident.Pos())
+			t.Errorf("%s:%d menciona %q: INV-RIES-09 prohíbe que PuntajeRiesgo/NivelRiesgo/SenalesDeRiesgo crucen la frontera de contexto hacia identidad/puertos.DecisionConfianza", archivo, pos.Line, ident.Name)
+		}
+		return true
+	})
 }

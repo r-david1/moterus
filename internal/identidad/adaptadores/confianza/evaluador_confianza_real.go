@@ -41,10 +41,17 @@ func (a *EvaluadorConfianzaReal) Evaluar(ctx context.Context, s puertos.Solicitu
 		IPOrigen:          s.Origen.IP().String(),
 		CorreoNormalizado: normalizarCorreoLaxo(s.CorreoNormalizado),
 		TokenCaptcha:      s.TokenCaptcha,
+		HuellaDispositivo: s.Origen.HuellaDispositivo(),
 	})
 	if err != nil {
 		return puertos.DecisionConfianza{}, err
 	}
+	// NO agregar aquí PuntajeRiesgo/NivelRiesgo/SenalesDeRiesgo: INV-RIES-09
+	// (docs/design/fingerprinting-comportamiento.md §4) prohíbe que esos tres
+	// campos crucen la frontera de contexto. identidad/puertos.
+	// DecisionConfianza no los declara a propósito — publicarlos le diría a
+	// un atacante cuánto le falta para disparar el detector de riesgo. Ver
+	// TestEvaluadorConfianzaReal_NuncaExponeCamposDeRiesgo.
 	return puertos.DecisionConfianza{
 		Permitido:       decision.Permitido,
 		RequiereStepUp:  decision.RequiereStepUp,
@@ -63,6 +70,9 @@ func (a *EvaluadorConfianzaReal) RegistrarResultado(ctx context.Context, r puert
 		IPOrigen:          r.Origen.IP().String(),
 		CorreoNormalizado: normalizarCorreoLaxo(r.CorreoNormalizado),
 		Exitoso:           r.Exitoso,
+		HuellaDispositivo: r.Origen.HuellaDispositivo(),
+		IDUsuario:         r.UsuarioID,
+		IDSolicitud:       r.Origen.IDSolicitud(),
 	})
 }
 

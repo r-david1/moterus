@@ -164,7 +164,7 @@ func montarIdentidadYAcceso(ctx, ctxFondo context.Context, app *fiber.App, cfg c
 	// contra el mismo Redis, cada contexto lo envuelve detrás de su propio
 	// puerto EvaluadorConfianza. nil si REDIS_URL no está definido (ambos
 	// contextos caen a su propio no-op, cada uno con su WARN de arranque).
-	riesgo := construirEvaluadorDeRiesgo(cfg)
+	riesgo := construirEvaluadorDeRiesgo(cfg, pool, relojReal)
 
 	// portero es el confianza/puertos.PorteroDeSala que las rutas de
 	// Acceso, Identidad y Tenencia montan como su primer/único middleware
@@ -527,8 +527,18 @@ func exigirEnProduccionOAdvertir(cfg configuracion.Config, nombreVar, valor, def
 // está definido, o nil si no — cada contexto (Identidad, Acceso) decide
 // por su cuenta qué adaptador no-op montar detrás de su propio puerto
 // EvaluadorConfianza cuando esto es nil.
-func construirEvaluadorDeRiesgo(cfg configuracion.Config) confianzapuertos.EvaluadorDeRiesgo {
+//
+// Con REDIS_URL definido, también cablea la tercera extensión de Confianza
+// —reconocimiento de origen, docs/design/fingerprinting-comportamiento.md—:
+// el puerto PerfilDeOrigenes (§2.2) sobre el mismo cliente Redis compartido
+// (nunca una conexión nueva), la auditoría de Confianza ya usada por las
+// colas virtuales (§1.6) y el reloj real. ConPoliticaRiesgo se omite a
+// propósito: el propio constructor usa dominio.PoliticaRiesgoPorDefecto(),
+// que arranca en modo `observar` (INV-RIES-14) — el comportamiento correcto
+// para un primer despliegue, sin calibrar contra tráfico real.
+func construirEvaluadorDeRiesgo(cfg configuracion.Config, pool *pgxpool.Pool, relojReal reloj.Real) confianzapuertos.EvaluadorDeRiesgo {
 	if cfg.URLRedis == "" {
+		slog.Warn("api: reconocimiento de origen desactivado — REDIS_URL no está definido, EvaluarTrustSignalCasoDeUso ni siquiera se monta")
 		return nil
 	}
 	clienteRedis, err := cache.NuevoClienteRedis(cfg.URLRedis)
@@ -537,9 +547,18 @@ func construirEvaluadorDeRiesgo(cfg configuracion.Config) confianzapuertos.Evalu
 	}
 	limitador := confianzaredis.NuevoLimitadorTasa(clienteRedis)
 	verificadorCaptcha := turnstile.NuevoVerificadorCaptcha(cfg.TurnstileSecretKey, cfg.TurnstileVerifyURL, cfg.EntornoApp)
-	evaluarTrustSignal := confianzaaplicacion.NuevoEvaluarTrustSignalCasoDeUso(limitador, verificadorCaptcha)
+	perfilOrigenes := confianzaredis.NuevoPerfilDeOrigenes(clienteRedis)
+	registroAuditoriaRiesgo := confianzaauditoria.NuevoRegistroAuditoria(pool)
+	evaluarTrustSignal := confianzaaplicacion.NuevoEvaluarTrustSignalCasoDeUso(
+		limitador, verificadorCaptcha,
+		confianzaaplicacion.ConPerfilesDeOrigen(perfilOrigenes),
+		confianzaaplicacion.ConAuditoriaDeRiesgo(registroAuditoriaRiesgo),
+		confianzaaplicacion.ConRelojDeRiesgo(relojReal),
+	)
 	slog.Info("api: motor de Confianza real montado (rate limiting por IP y por cuenta vía Redis + captcha Cloudflare Turnstile)",
 		"redis_configurado", true, "turnstile_secret_configurado", cfg.TurnstileSecretKey != "")
+	slog.Info("api: reconocimiento de origen activo (modo observar por defecto — no cambia el desenlace de ningún login, solo lo audita/loguea)",
+		"redis_configurado", true)
 	return evaluarTrustSignal
 }
 
