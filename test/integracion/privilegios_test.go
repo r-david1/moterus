@@ -100,3 +100,52 @@ func TestPrivilegiosRolLoginIdentidad_DeleteSobreUsuarios_PermissionDenied(t *te
 		t.Errorf("SQLSTATE = %q, esperado %q (insufficient_privilege)", pgErr.Code, codigoInsuficientePrivilegio)
 	}
 }
+
+// TestPrivilegiosRolLoginIdentidad_DeleteSobreSalasEspera_PermissionDenied
+// verifica el comentario explícito de la migración 000017 (contexto
+// Confianza, docs/design/colas-virtuales.md §6.1): rol_aplicacion tiene
+// SELECT/INSERT/UPDATE sobre salas_espera, pero deliberadamente NO DELETE
+// ("una sala cerrada es evidencia de un evento operativo, se conserva con
+// estado terminal — mismo criterio que invitaciones y sesiones"). Un GRANT
+// DELETE agregado por error a esta tabla lo detecta este test, no una
+// revisión manual del SQL de la migración.
+func TestPrivilegiosRolLoginIdentidad_DeleteSobreSalasEspera_PermissionDenied(t *testing.T) {
+	pool := poolAplicacion(t)
+
+	_, err := pool.Exec(t.Context(), `DELETE FROM salas_espera WHERE false`)
+	if err == nil {
+		t.Fatalf("DELETE sobre salas_espera con rol_login_identidad no devolvió error; " +
+			"la migración 000017 no otorgó DELETE explícitamente, así que esto no debería poder ejecutarse")
+	}
+
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		t.Fatalf("el error no es *pgconn.PgError: %v (%T)", err, err)
+	}
+	if pgErr.Code != codigoInsuficientePrivilegio {
+		t.Errorf("SQLSTATE = %q, esperado %q (insufficient_privilege)", pgErr.Code, codigoInsuficientePrivilegio)
+	}
+}
+
+// TestPrivilegiosRolLoginIdentidad_TruncateSobreSalasEspera_PermissionDenied
+// cubre el otro REVOKE explícito de 000017 (TRUNCATE, además de DELETE):
+// un TRUNCATE evita cualquier trigger o RLS a nivel de fila, así que merece
+// su propia verificación en vez de asumir que el rechazo de DELETE ya lo
+// cubre.
+func TestPrivilegiosRolLoginIdentidad_TruncateSobreSalasEspera_PermissionDenied(t *testing.T) {
+	pool := poolAplicacion(t)
+
+	_, err := pool.Exec(t.Context(), `TRUNCATE salas_espera`)
+	if err == nil {
+		t.Fatalf("TRUNCATE sobre salas_espera con rol_login_identidad no devolvió error; " +
+			"la migración 000017 no otorgó TRUNCATE explícitamente, así que esto no debería poder ejecutarse")
+	}
+
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		t.Fatalf("el error no es *pgconn.PgError: %v (%T)", err, err)
+	}
+	if pgErr.Code != codigoInsuficientePrivilegio {
+		t.Errorf("SQLSTATE = %q, esperado %q (insufficient_privilege)", pgErr.Code, codigoInsuficientePrivilegio)
+	}
+}

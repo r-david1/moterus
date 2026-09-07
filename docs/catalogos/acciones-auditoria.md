@@ -101,7 +101,26 @@ estas 10 acciones. Sembradas por la migración
 procedimiento de "Agregar una acción nueva" de arriba. Ver
 `docs/design/tenencia-bounded-context.md`, secciones 1.6 y 6.4.
 
+## Contexto Confianza
+
+| Acción | Recurso | Descripción | Evento de dominio | Valores de `resultado` |
+|---|---|---|---|---|
+| `sala_espera.abierta` | `sala_espera` | Se abrió una cola de acceso virtual sobre una ruta protegida, con su ritmo de admisión y capacidad iniciales. | `SalaDeEsperaAbierta` | `exito` |
+| `sala_espera.ritmo_cambiado` | `sala_espera` | Se cambió el ritmo de admisión de una sala abierta durante el evento; incluye el cursor y la longitud de cola al momento del cambio — el dato que un post-mortem del evento va a pedir primero. | `RitmoDeAdmisionCambiado` | `exito` |
+| `sala_espera.cerrada` | `sala_espera` | La sala pasó a `drenando` o `cerrada` (distinguidas por `detalles.destino`); incluye los totales de ingresos y admitidos del evento. | `SalaDeEsperaCerrada` | `exito` |
+
+3 eventos de dominio (`internal/confianza/dominio/eventos.go`) mapean 1:1 a
+estas 3 acciones. Sembradas por la migración
+`db/migraciones/000018_acciones_auditoria_confianza.up.sql`, separada de
+`000017_crear_salas_espera.up.sql` (que solo crea la tabla) siguiendo el
+mismo criterio que ya usaron Acceso (000006/000007), Tenencia
+(000009/000012) y MFA/OTP (000015/000016). Son las primeras filas de
+auditoría del contexto Confianza (§1.7 de `docs/design/colas-virtuales.md`):
+ni los ingresos, ni las consultas de turno, ni los reclamos se auditan
+(INV-COLA-11, mismo razonamiento que INV-TEN-25) — solo las mutaciones del
+ciclo de vida de una sala (abrir, cambiar ritmo, drenar, cerrar). Ver
+`docs/design/colas-virtuales.md`, secciones 1.7 y 6.1.
+
 ## Otros contextos
 
-Sin acciones propias todavía — se agregan aquí a medida que Confianza
-empiece a emitir auditoría.
+Sin acciones propias todavía.
