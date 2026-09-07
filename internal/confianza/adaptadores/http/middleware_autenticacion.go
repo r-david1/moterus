@@ -1,0 +1,85 @@
+package http
+
+import (
+	"context"
+	"net/http"
+	"strings"
+
+	"github.com/danielgtaylor/huma/v2"
+	"github.com/gofiber/fiber/v2"
+
+	accesodominio "github.com/r-david1/moterus/internal/acceso/dominio"
+	accesopuertos "github.com/r-david1/moterus/internal/acceso/puertos"
+)
+
+// Este archivo es el precedente EXACTO de
+// tenencia/adaptadores/http/middleware_autenticacion.go (que a su vez es el
+// precedente exacto del homónimo de Identidad), aplicado a los endpoints de
+// administración org-scoped de Confianza (§7.2 del diseño
+// docs/design/colas-virtuales.md): Bearer + acceso/puertos.ValidadorDeAccesos,
+// sin volver a consultar sesión viva en el camino normal
+// (ExigirSesionViva=false). Depende ÚNICAMENTE de acceso/puertos, nunca de
+// acceso/adaptadores (mismo criterio de frontera que INV-TEN-28: el único
+// paquete de Confianza autorizado a importar algo de acceso/puertos es este
+// middleware HTTP). La duplicación frente a Tenencia es deliberada, mismo
+// criterio que la duplicación de OrigenSolicitud entre los cuatro
+// contextos.
+const cabeceraAutorizacion = "Authorization"
+const prefijoBearer = "Bearer "
+
+// claveAcceso es la clave no exportada bajo la que este middleware publica
+// el acceso/puertos.Acceso ya validado.
+type claveAcceso struct{}
+
+// accesoDesdeContexto recupera el acceso/puertos.Acceso publicado por
+// middlewareAutenticacion. El segundo valor es false si el handler se
+// invocó sin pasar por ese middleware.
+func accesoDesdeContexto(ctx context.Context) (accesopuertos.Acceso, bool) {
+	acceso, ok := ctx.Value(claveAcceso{}).(accesopuertos.Acceso)
+	return acceso, ok
+}
+
+// middlewareAutenticacion construye el middleware Huma por operación que
+// exige un token de acceso Bearer válido para los endpoints de
+// administración de salas de espera (§7.2 del diseño).
+func middlewareAutenticacion(api huma.API, validador accesopuertos.ValidadorDeAccesos) func(huma.Context, func(huma.Context)) {
+	return func(ctx huma.Context, next func(huma.Context)) {
+		cabecera := ctx.Header(cabeceraAutorizacion)
+		if !strings.HasPrefix(cabecera, prefijoBearer) {
+			escribirErrorAutenticacion(api, ctx, "falta la cabecera Authorization: Bearer <token>")
+			return
+		}
+		token := strings.TrimSpace(strings.TrimPrefix(cabecera, prefijoBearer))
+		if token == "" {
+			escribirErrorAutenticacion(api, ctx, "falta la cabecera Authorization: Bearer <token>")
+			return
+		}
+
+		// Construye un acceso/dominio.OrigenSolicitud directamente aquí, NO
+		// el confianza/dominio.OrigenSolicitud que publica
+		// middlewareOrigenSolicitud de este mismo paquete: son tipos
+		// distintos a propósito y ComandoValidarAcceso.Origen exige el de
+		// acceso/dominio (mismo criterio que Tenencia).
+		origen, err := accesodominio.NuevoOrigenSolicitud(ctx.RemoteAddr(), ctx.Header(fiber.HeaderUserAgent), ctx.Header(cabeceraHuellaDispositivo), ctx.Header(cabeceraIDSolicitud))
+		if err != nil {
+			origen, _ = accesodominio.NuevoOrigenSolicitud("", ctx.Header(fiber.HeaderUserAgent), ctx.Header(cabeceraHuellaDispositivo), ctx.Header(cabeceraIDSolicitud))
+		}
+
+		acceso, err := validador.Validar(ctx.Context(), accesopuertos.ComandoValidarAcceso{
+			TokenCompacto:    token,
+			ExigirSesionViva: false,
+			Origen:           origen,
+		})
+		if err != nil {
+			escribirErrorAutenticacion(api, ctx, "token de acceso inválido o expirado")
+			return
+		}
+
+		next(huma.WithValue(ctx, claveAcceso{}, acceso))
+	}
+}
+
+func escribirErrorAutenticacion(api huma.API, ctx huma.Context, mensaje string) {
+	ctx.SetHeader("WWW-Authenticate", `Bearer error="invalid_token"`)
+	_ = huma.WriteErr(api, ctx, http.StatusUnauthorized, mensaje)
+}

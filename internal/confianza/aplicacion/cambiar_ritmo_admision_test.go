@@ -146,6 +146,37 @@ func TestCambiarRitmoDeAdmisionCasoDeUso_SalaNoEncontrada(t *testing.T) {
 	}
 }
 
+// TestCambiarRitmoDeAdmisionCasoDeUso_IDOrganizacionNoCoincideEsSalaNoEncontrada
+// es el test de regresión del IDOR encontrado durante la verificación de la
+// infraestructura HTTP (endpoint PATCH org-scoped, §7.2 del diseño): el
+// middleware de autorización de Tenencia solo confirma el permiso del
+// sujeto sobre el {idOrganizacion} de la URL, nunca sobre la sala que este
+// comando termina mutando. Sin verificarPertenenciaOrganizacion (soporte.go),
+// un administrador autorizado sobre su propia organización podría pasar el
+// IDSala de una sala de alcance sistema (como la de este test) y mutarla
+// igual — exactamente lo que ADR 0045 dice que no debe ser posible por
+// HTTP para salas de alcance sistema.
+func TestCambiarRitmoDeAdmisionCasoDeUso_IDOrganizacionNoCoincideEsSalaNoEncontrada(t *testing.T) {
+	ahora := ahoraDePrueba()
+	sala := salaAbiertaDePrueba(t, idSalaValido1, 50, ahora) // alcance sistema
+	m := nuevosMocksCambiarRitmo(t, sala)
+	caso := m.casoDeUso()
+
+	_, err := caso.CambiarRitmo(context.Background(), puertos.ComandoCambiarRitmoAdmision{
+		IDSala:         idSalaValido1,
+		IDOrganizacion: "018e7e6a-0000-7000-8000-0000000009aa", // cualquier organización: la sala es de alcance sistema
+		RitmoAdmision:  120,
+		Origen:         origenDePrueba(t),
+	})
+	var errNoEncontrada *dominio.ErrSalaNoEncontrada
+	if !errors.As(err, &errNoEncontrada) {
+		t.Fatalf("se esperaba *ErrSalaNoEncontrada (denegar como IDOR), obtuvo %T: %v", err, err)
+	}
+	if len(m.salas.LlamadasGuardar) != 0 {
+		t.Errorf("Guardar se llamó %d veces; una discrepancia de organización no debe persistir ningún cambio", len(m.salas.LlamadasGuardar))
+	}
+}
+
 func TestCambiarRitmoDeAdmisionCasoDeUso_ProyeccionFallidaNoAuditaNiPersiste(t *testing.T) {
 	ahora := ahoraDePrueba()
 	sala := salaAbiertaDePrueba(t, idSalaValido1, 50, ahora)

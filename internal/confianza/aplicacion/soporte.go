@@ -13,6 +13,44 @@ import (
 	"github.com/r-david1/moterus/internal/confianza/puertos"
 )
 
+// verificarPertenenciaOrganizacion refuerza, del lado del caso de uso, que
+// una sala cargada por IDSala pertenece a la organización que ya autorizó
+// el endpoint HTTP org-scoped (§7.2 del diseño). idOrganizacionEsperada=""
+// significa que el llamador es de confianza para tocar cualquier sala (el
+// subcomando de CLI que opera salas de alcance sistema fuera de la API) y
+// no se verifica nada.
+//
+// Sin este chequeo, el middleware de autorización de Tenencia solo
+// confirma que el sujeto tiene el permiso sobre el {idOrganizacion} de la
+// RUTA — nunca sobre la sala que el comando termina mutando. Un
+// administrador autorizado sobre su propia organización podría entonces
+// pasar el IDSala de una sala de alcance sistema, o de otra organización,
+// y mutarla igual (IDOR clásico: autorización sobre un recurso de la URL,
+// operación real sobre un recurso distinto tomado del cuerpo).
+//
+// Devuelve ErrSalaNoEncontrada, no un error de autorización, en la
+// discrepancia: mismo criterio de "no oráculo" que el resto del catálogo
+// de errores de esta extensión (§1.8 del diseño) — confirmar que una sala
+// existe pero pertenece a otra organización (o al sistema) es información
+// que un administrador de una organización ajena no debe poder distinguir
+// de "esa sala no existe".
+func verificarPertenenciaOrganizacion(sala *dominio.SalaDeEspera, idOrganizacionEsperada, idSalaReferencia string) error {
+	if idOrganizacionEsperada == "" {
+		return nil
+	}
+	esperado, err := dominio.IDOrganizacionDesde(idOrganizacionEsperada)
+	if err != nil {
+		// Un IDOrganizacion mal formado nunca puede coincidir con nada: se
+		// trata igual que una discrepancia (denegar), no como un 422 aparte.
+		return &dominio.ErrSalaNoEncontrada{Referencia: idSalaReferencia}
+	}
+	idOrg, esOrgScoped := sala.Alcance().OrganizacionID()
+	if !esOrgScoped || !idOrg.EsIgual(esperado) {
+		return &dominio.ErrSalaNoEncontrada{Referencia: idSalaReferencia}
+	}
+	return nil
+}
+
 // alcanceSalaDesde construye un dominio.AlcanceSala a partir del
 // IDOrganizacion primitivo que transportan los comandos de administración
 // (§2.1 del diseño): "" significa alcance sistema.

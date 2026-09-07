@@ -37,14 +37,23 @@ func NuevoCambiarRitmoDeAdmisionCasoDeUso(
 	}
 }
 
-// CambiarRitmo carga la sala, calcula la longitud aproximada de la cola en
-// este instante (EstadoDeCola.Instantanea — el dominio no la consulta por sí
-// mismo, INV-COLA-08), invoca dominio.SalaDeEspera.CambiarRitmo (que
-// recalcula el ancla del reloj de admisión para continuidad, §1.5),
-// reproyecta a Redis con la Version incrementada y, solo si eso tuvo éxito,
-// persiste y audita RitmoDeAdmisionCambiado en la misma unidad de trabajo
-// (INV-COLA-11). Mismo criterio fail-closed que AbrirSalaCasoDeUso: si la
-// proyección a Redis falla, el ritmo nunca se persiste como cambiado.
+// CambiarRitmo carga la sala y, si cmd.IDOrganizacion no está vacío
+// (invocación desde el endpoint HTTP org-scoped, §7.2), verifica que la
+// sala cargada pertenezca exactamente a esa organización antes de mutar
+// nada (verificarPertenenciaOrganizacion en soporte.go) — el middleware de
+// autorización solo confirma el permiso sobre el {idOrganizacion} de la
+// URL, nunca sobre la sala que este comando termina tocando, así que sin
+// esta verificación un administrador autorizado sobre su propia
+// organización podría pasar el IDSala de una sala de alcance sistema o de
+// otra organización y mutarla igual (IDOR). Luego calcula la longitud
+// aproximada de la cola en este instante (EstadoDeCola.Instantanea — el
+// dominio no la consulta por sí mismo, INV-COLA-08), invoca
+// dominio.SalaDeEspera.CambiarRitmo (que recalcula el ancla del reloj de
+// admisión para continuidad, §1.5), reproyecta a Redis con la Version
+// incrementada y, solo si eso tuvo éxito, persiste y audita
+// RitmoDeAdmisionCambiado en la misma unidad de trabajo (INV-COLA-11).
+// Mismo criterio fail-closed que AbrirSalaCasoDeUso: si la proyección a
+// Redis falla, el ritmo nunca se persiste como cambiado.
 func (c *CambiarRitmoDeAdmisionCasoDeUso) CambiarRitmo(ctx context.Context, cmd puertos.ComandoCambiarRitmoAdmision) (puertos.VistaSala, error) {
 	id, err := dominio.IDSalaDeEsperaDesde(cmd.IDSala)
 	if err != nil {
@@ -61,6 +70,9 @@ func (c *CambiarRitmoDeAdmisionCasoDeUso) CambiarRitmo(ctx context.Context, cmd 
 	}
 	if sala == nil {
 		return puertos.VistaSala{}, &dominio.ErrSalaNoEncontrada{Referencia: cmd.IDSala}
+	}
+	if err := verificarPertenenciaOrganizacion(sala, cmd.IDOrganizacion, cmd.IDSala); err != nil {
+		return puertos.VistaSala{}, err
 	}
 
 	instantanea, err := c.estadoCola.Instantanea(ctx, sala.Clave().String())

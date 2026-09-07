@@ -63,6 +63,76 @@ func TestINV_ACC_19_SoloElACLDeIdentidadImportaIdentidad(t *testing.T) {
 	}
 }
 
+// TestSoloElACLDeTenenciaImportaTenenciaEnConfianza verifica que, dentro de
+// internal/confianza, el ÚNICO paquete autorizado a importar algo de
+// internal/tenencia es confianza/adaptadores/tenencia (el ACL, §2.2 del
+// diseño docs/design/colas-virtuales.md: "único paquete de Confianza
+// autorizado a importar tenencia/puertos", mismo criterio de frontera que
+// INV-TEN-28/INV-ACC-19).
+func TestSoloElACLDeTenenciaImportaTenenciaEnConfianza(t *testing.T) {
+	verificarUnicoImportadorPermitido(t,
+		repoRelativo(t, "internal/confianza"),
+		raizModulo+"/internal/tenencia",
+		raizModulo+"/internal/confianza/adaptadores/tenencia",
+	)
+}
+
+// TestSoloElAdaptadorHTTPImportaAccesoEnConfianza verifica que, dentro de
+// internal/confianza, el ÚNICO paquete autorizado a importar algo de
+// internal/acceso es confianza/adaptadores/http (el middleware de
+// autenticación Bearer de los endpoints de administración, §7.2 del diseño
+// docs/design/colas-virtuales.md — mismo criterio que
+// tenencia/adaptadores/http/middleware_autenticacion.go frente a
+// internal/acceso).
+func TestSoloElAdaptadorHTTPImportaAccesoEnConfianza(t *testing.T) {
+	verificarUnicoImportadorPermitido(t,
+		repoRelativo(t, "internal/confianza"),
+		raizModulo+"/internal/acceso",
+		raizModulo+"/internal/confianza/adaptadores/http",
+	)
+}
+
+// verificarUnicoImportadorPermitido recorre raizContexto y falla si algún
+// paquete que no sea paqueteImportadorPermitido importa un paquete cuyo
+// import path empieza con prefijoImportadoProhibido.
+func verificarUnicoImportadorPermitido(t *testing.T, raizContexto, prefijoImportadoProhibido, paqueteImportadorPermitido string) {
+	t.Helper()
+
+	fset := token.NewFileSet()
+	err := filepath.WalkDir(raizContexto, func(ruta string, entrada fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entrada.IsDir() {
+			return nil
+		}
+		if !strings.HasSuffix(ruta, ".go") {
+			return nil
+		}
+
+		paqueteDeEsteArchivo := paqueteGoDesdeRuta(ruta, raizContexto)
+		if paqueteDeEsteArchivo == paqueteImportadorPermitido {
+			return nil
+		}
+
+		f, errParse := parser.ParseFile(fset, ruta, nil, parser.ImportsOnly)
+		if errParse != nil {
+			return errParse
+		}
+		for _, imp := range f.Imports {
+			valor := strings.Trim(imp.Path.Value, `"`)
+			if strings.HasPrefix(valor, prefijoImportadoProhibido) {
+				t.Errorf("%s importa %q: solo %s puede importar algo de %s",
+					ruta, valor, paqueteImportadorPermitido, prefijoImportadoProhibido)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("recorriendo %s: %v", raizContexto, err)
+	}
+}
+
 // paqueteGoDesdeRuta reconstruye el import path del paquete Go al que
 // pertenece un archivo .go dado (asumiendo la disposición estándar de
 // go.mod: internal/acceso/... -> github.com/r-david1/moterus/internal/acceso/...).

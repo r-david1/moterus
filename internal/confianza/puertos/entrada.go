@@ -185,21 +185,40 @@ type ComandoAbrirSala struct {
 
 // ComandoCambiarRitmoAdmision transporta la entrada de
 // GestorDeSalasDeEspera.CambiarRitmo (§3.2 del diseño).
+//
+// IDOrganizacion: "" cuando el llamador es de confianza para tocar
+// cualquier sala (el subcomando de CLI que opera salas de alcance sistema
+// fuera de la API, §7.2); no vacío cuando el llamador es el endpoint HTTP
+// org-scoped (§7.2), que ya autorizó al sujeto sobre ESA organización y
+// exige que el caso de uso confirme que la sala cargada por IDSala
+// pertenece exactamente a ella — sin este campo, un administrador
+// autorizado sobre su propia organización podría pasar el IDSala de una
+// sala de alcance sistema o de otra organización y mutarla igual, porque
+// nada más en el flujo verifica la pertenencia (IDOR: la autorización del
+// middleware es sobre el {idOrganizacion} de la ruta, no sobre el
+// recurso que el comando termina tocando).
 type ComandoCambiarRitmoAdmision struct {
-	IDSala        string
-	RitmoAdmision int
-	IDSujeto      string
-	Origen        dominio.OrigenSolicitud
+	IDSala         string
+	IDOrganizacion string
+	RitmoAdmision  int
+	IDSujeto       string
+	Origen         dominio.OrigenSolicitud
 }
 
 // ComandoCambiarEstadoSala transporta la entrada de
 // GestorDeSalasDeEspera.CambiarEstado (drenar/cerrar/reabrir, §3.3 del
 // diseño).
+//
+// IDOrganizacion: mismo criterio y misma razón que en
+// ComandoCambiarRitmoAdmision — "" para el llamador de confianza (CLI,
+// alcance sistema), no vacío para el endpoint HTTP org-scoped, que exige
+// verificar que la sala cargada por IDSala pertenezca a esa organización.
 type ComandoCambiarEstadoSala struct {
-	IDSala   string
-	Destino  string // "abierta" | "drenando" | "cerrada"
-	IDSujeto string
-	Origen   dominio.OrigenSolicitud
+	IDSala         string
+	IDOrganizacion string
+	Destino        string // "abierta" | "drenando" | "cerrada"
+	IDSujeto       string
+	Origen         dominio.OrigenSolicitud
 }
 
 // VistaSala es la proyección completa de una SalaDeEspera para los

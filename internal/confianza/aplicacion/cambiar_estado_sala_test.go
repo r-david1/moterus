@@ -221,6 +221,33 @@ func TestCambiarEstadoSalaCasoDeUso_SalaNoEncontrada(t *testing.T) {
 	}
 }
 
+// TestCambiarEstadoSalaCasoDeUso_IDOrganizacionNoCoincideEsSalaNoEncontrada
+// es el mismo test de regresión del IDOR que
+// TestCambiarRitmoDeAdmisionCasoDeUso_IDOrganizacionNoCoincideEsSalaNoEncontrada,
+// para el otro caso de uso de administración que tiene el mismo problema:
+// sin verificarPertenenciaOrganizacion, un administrador autorizado sobre
+// su propia organización podría drenar/cerrar una sala de alcance sistema
+// pasando su IDSala directamente.
+func TestCambiarEstadoSalaCasoDeUso_IDOrganizacionNoCoincideEsSalaNoEncontrada(t *testing.T) {
+	sala := salaAbiertaDePrueba(t, idSalaValido1, 50, ahoraDePrueba()) // alcance sistema
+	m := nuevosMocksCambiarEstadoSala(t, sala)
+	caso := m.casoDeUso()
+
+	_, err := caso.CambiarEstado(context.Background(), puertos.ComandoCambiarEstadoSala{
+		IDSala:         idSalaValido1,
+		IDOrganizacion: "018e7e6a-0000-7000-8000-0000000009aa",
+		Destino:        dominio.EstadoSalaCerrada.String(),
+		Origen:         origenDePrueba(t),
+	})
+	var errNoEncontrada *dominio.ErrSalaNoEncontrada
+	if !errors.As(err, &errNoEncontrada) {
+		t.Fatalf("se esperaba *ErrSalaNoEncontrada (denegar como IDOR), obtuvo %T: %v", err, err)
+	}
+	if len(m.salas.LlamadasGuardar) != 0 {
+		t.Errorf("Guardar se llamó %d veces; una discrepancia de organización no debe persistir ningún cambio", len(m.salas.LlamadasGuardar))
+	}
+}
+
 func TestCambiarEstadoSalaCasoDeUso_RetirarFallidoNoAuditaNiPersiste(t *testing.T) {
 	sala := salaAbiertaDePrueba(t, idSalaValido1, 50, ahoraDePrueba())
 	m := nuevosMocksCambiarEstadoSala(t, sala)

@@ -43,8 +43,13 @@ func NuevoCambiarEstadoSalaCasoDeUso(
 	}
 }
 
-// CambiarEstado carga la sala, valida cmd.Destino contra el catálogo cerrado
-// de EstadoSala y despacha a Abrir/Drenar/Cerrar del agregado según
+// CambiarEstado carga la sala, verifica su pertenencia a cmd.IDOrganizacion
+// cuando el llamador es el endpoint HTTP org-scoped (mismo criterio y misma
+// razón que CambiarRitmoDeAdmisionCasoDeUso.CambiarRitmo: sin este chequeo,
+// el middleware de autorización de Tenencia solo confirma el permiso sobre
+// el {idOrganizacion} de la URL, nunca sobre la sala que este comando
+// termina tocando — IDOR), valida cmd.Destino contra el catálogo cerrado de
+// EstadoSala y despacha a Abrir/Drenar/Cerrar del agregado según
 // corresponda:
 //
 //   - destino "abierta" (reapertura durante el drenaje): sala.Abrir(ahora),
@@ -84,6 +89,9 @@ func (c *CambiarEstadoSalaCasoDeUso) CambiarEstado(ctx context.Context, cmd puer
 	}
 	if sala == nil {
 		return puertos.VistaSala{}, &dominio.ErrSalaNoEncontrada{Referencia: cmd.IDSala}
+	}
+	if err := verificarPertenenciaOrganizacion(sala, cmd.IDOrganizacion, cmd.IDSala); err != nil {
+		return puertos.VistaSala{}, err
 	}
 
 	ahora := c.reloj.Ahora()
