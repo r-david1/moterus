@@ -34,4 +34,22 @@ type Decision struct {
 	// alguna chance de ser permitida (Retry-After). Cero cuando
 	// Permitido=true.
 	ReintentarEn time.Duration
+
+	// PuntajeRiesgo, NivelRiesgo y SenalesDeRiesgo son el resultado de la
+	// extensión de reconocimiento de origen (§1.2 y §1.3 de
+	// fingerprinting-comportamiento.md). INV-RIES-09: ninguno de los tres
+	// cruza la frontera de contexto — los ACL (identidad|acceso|
+	// tenencia/adaptadores/confianza) no los mapean a su DecisionConfianza,
+	// así que no pueden llegar a una respuesta HTTP. Eso lo hacen cumplir
+	// los ACL en una fase posterior, no el dominio: aquí solo se declaran
+	// los campos y se pueblan (también cuando Permitido=true, porque son el
+	// insumo del modo observación). Contrasta deliberadamente con Puntaje
+	// (captcha), que sí se publica en ResultadoAutenticacion.
+	// PuntajeConfianza: publicar el puntaje de riesgo le diría a un
+	// atacante exactamente cuánto le falta para disparar el detector.
+	PuntajeRiesgo PuntajeRiesgo
+	// NivelRiesgo ver comentario de PuntajeRiesgo (INV-RIES-09).
+	NivelRiesgo NivelRiesgo
+	// SenalesDeRiesgo ver comentario de PuntajeRiesgo (INV-RIES-09).
+	SenalesDeRiesgo []SenalRiesgo
 }

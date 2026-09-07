@@ -366,6 +366,8 @@ func TestErrores_TodosImplementanErrorConMensajeNoVacio(t *testing.T) {
 		&ErrTicketDesconocido{},
 		&ErrTicketConsumido{},
 		&ErrEstadoDeColaNoDisponible{Motivo: "x"},
+		&ErrPoliticaRiesgoInvalida{Motivo: "x"},
+		&ErrSenalRiesgoDesconocida{Valor: "x"},
 	}
 	for _, e := range todos {
 		if e.Error() == "" {

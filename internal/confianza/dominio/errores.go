@@ -249,6 +249,30 @@ func (e *ErrEstadoDeColaNoDisponible) Error() string {
 	return "el estado de la cola no está disponible: " + e.Motivo
 }
 
+// ErrPoliticaRiesgoInvalida se produce al construir una PoliticaRiesgo que
+// incumple alguna de sus invariantes (pesos fuera de [0,1], umbralElevado ≥
+// umbralAlto, vidaPerfil fuera de [7d, 2 años], maximoOrigenesRecordados
+// fuera de [1, 100], o un ModoRiesgo desconocido). §1.7 del diseño: falla al
+// arrancar el proceso, nunca en runtime — la política se construye una vez
+// en main.go. Mismo trato que PoliticaOrganizacionPorDefecto y
+// PoliticaSalaPorDefecto, que hacen panic si su propio default es
+// inválido, cubierto por un test de dominio.
+type ErrPoliticaRiesgoInvalida struct{ Motivo string }
+
+func (e *ErrPoliticaRiesgoInvalida) Error() string {
+	return "política de riesgo inválida: " + e.Motivo
+}
+
+// ErrSenalRiesgoDesconocida se produce al construir una SenalRiesgo con un
+// valor fuera del catálogo cerrado de tres valores (§1.7 del diseño). Solo
+// alcanzable desde un test o una deserialización futura: el catálogo
+// cerrado no permite que un valor arbitrario llegue por otra vía.
+type ErrSenalRiesgoDesconocida struct{ Valor string }
+
+func (e *ErrSenalRiesgoDesconocida) Error() string {
+	return "señal de riesgo desconocida: " + e.Valor
+}
+
 // ErrIngresoDenegadoPorConfianza se produce cuando EvaluadorDeRiesgo deniega
 // el ingreso a una sala (accion=AccionIngresoASala, §12 del diseño
 // colas-virtuales.md): el único freno contra el farming de tickets (§3.4
