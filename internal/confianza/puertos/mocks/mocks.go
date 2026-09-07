@@ -442,3 +442,22 @@ func (m *VerificadorDeAutorizacion) Autorizar(ctx context.Context, q puertos.Con
 	}
 	return true, nil
 }
+
+// --- UnidadDeTrabajo (salida) --------------------------------------------
+
+// UnidadDeTrabajo es el test double de puertos.UnidadDeTrabajo. Por defecto
+// (FnEjecutar sin configurar) simplemente invoca fn(ctx), simulando una
+// transacción que siempre confirma. Mismo patrón que
+// tenencia/puertos/mocks.UnidadDeTrabajo.
+type UnidadDeTrabajo struct {
+	FnEjecutar func(ctx context.Context, fn func(ctx context.Context) error) error
+}
+
+var _ puertos.UnidadDeTrabajo = (*UnidadDeTrabajo)(nil)
+
+func (m *UnidadDeTrabajo) Ejecutar(ctx context.Context, fn func(ctx context.Context) error) error {
+	if m.FnEjecutar != nil {
+		return m.FnEjecutar(ctx, fn)
+	}
+	return fn(ctx)
+}

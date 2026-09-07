@@ -48,6 +48,26 @@ type VerificadorCaptcha interface {
 // aditiva sobre el archivo existente: nada de lo de arriba cambia.
 // =============================================================================
 
+// UnidadDeTrabajo es el puerto de salida que agrupa la escritura del
+// agregado SalaDeEspera y el registro de auditoría en una sola transacción
+// (INV-COLA-11: "toda mutación del ciclo de vida se audita en la misma
+// unidad de trabajo que la escritura"). Mismo contrato exacto que
+// identidad/puertos.UnidadDeTrabajo, acceso/puertos.UnidadDeTrabajo y
+// tenencia/puertos.UnidadDeTrabajo (ADR 0005).
+//
+// Nota: el documento de diseño (docs/design/colas-virtuales.md) menciona
+// la "unidad de trabajo" en prosa (§3.1, §3.7, INV-COLA-11) pero no la
+// declara como puerto en su §2.2 -- a diferencia de Reloj/GeneradorIDs/
+// RegistroAuditoria/VerificadorDeAutorizacion, que sí trae explícitos como
+// "puertos que Confianza gana por primera vez". Sin este puerto,
+// AbrirSalaDeEspera/CambiarRitmoDeAdmision/CambiarEstadoSala no podrían
+// cumplir INV-COLA-11 tal como está redactada. Se agrega aquí, aditivo y
+// con la misma forma que en el resto del repositorio, en vez de inventar
+// una transacción ad hoc dentro de aplicacion.
+type UnidadDeTrabajo interface {
+	Ejecutar(ctx context.Context, fn func(ctx context.Context) error) error
+}
+
 // RepositorioSalasDeEspera persiste el agregado SalaDeEspera. Puerto de
 // salida frío: fuera del camino caliente de ingreso/consulta/reclamo
 // (INV-COLA-08), lo consumen únicamente GestorDeSalasDeEspera y el
