@@ -12,8 +12,12 @@ import (
 	"context"
 	"log"
 	"log/slog"
+	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -32,7 +36,13 @@ import (
 	accesoaplicacion "github.com/r-david1/moterus/internal/acceso/aplicacion"
 	accesopuertos "github.com/r-david1/moterus/internal/acceso/puertos"
 
+	confianzaauditoria "github.com/r-david1/moterus/internal/confianza/adaptadores/auditoria"
+	confianzacripto "github.com/r-david1/moterus/internal/confianza/adaptadores/cripto"
+	confianzahttp "github.com/r-david1/moterus/internal/confianza/adaptadores/http"
+	"github.com/r-david1/moterus/internal/confianza/adaptadores/porteronoop"
+	confianzapostgres "github.com/r-david1/moterus/internal/confianza/adaptadores/postgres"
 	confianzaredis "github.com/r-david1/moterus/internal/confianza/adaptadores/redis"
+	confianzatenencia "github.com/r-david1/moterus/internal/confianza/adaptadores/tenencia"
 	"github.com/r-david1/moterus/internal/confianza/adaptadores/turnstile"
 	confianzaaplicacion "github.com/r-david1/moterus/internal/confianza/aplicacion"
 	confianzapuertos "github.com/r-david1/moterus/internal/confianza/puertos"
@@ -74,6 +84,15 @@ func main() {
 
 	ctx := context.Background()
 
+	// ctxFondo/cancelarFondo es el context.Context de cierre ordenado que
+	// comparten las goroutines de vida larga del proceso (hoy, solo el
+	// reconciliador de colas de acceso virtual, §3.7/§12 de
+	// docs/design/colas-virtuales.md: no había ninguna goroutine de fondo
+	// antes de esta extensión). Se cancela al recibir SIGINT/SIGTERM, antes
+	// de apagar el servidor HTTP.
+	ctxFondo, cancelarFondo := context.WithCancel(context.Background())
+	defer cancelarFondo()
+
 	app := fiber.New(fiber.Config{
 		AppName: "auth-service",
 	})
@@ -91,8 +110,22 @@ func main() {
 	if cfg.URLBaseDeDatos == "" && cfg.URLBaseDeDatosAplicacion == "" {
 		log.Println("api: ni DATABASE_URL ni DATABASE_URL_APLICACION están definidos — solo se expone /health, los contextos Identidad y Acceso no se montan")
 	} else {
-		montarIdentidadYAcceso(ctx, app, cfg)
+		montarIdentidadYAcceso(ctx, ctxFondo, app, cfg)
 	}
+
+	// Apagado ordenado: al recibir SIGINT/SIGTERM, cancela ctxFondo (detiene
+	// el reconciliador en su próxima vuelta del select) y cierra el
+	// servidor HTTP dejando terminar las conexiones activas.
+	go func() {
+		senales := make(chan os.Signal, 1)
+		signal.Notify(senales, os.Interrupt, syscall.SIGTERM)
+		<-senales
+		log.Println("api: señal de apagado recibida, cerrando de forma ordenada")
+		cancelarFondo()
+		if err := app.ShutdownWithTimeout(10 * time.Second); err != nil {
+			log.Printf("api: error cerrando el servidor HTTP: %v", err)
+		}
+	}()
 
 	addr := ":" + strconv.Itoa(cfg.Puerto)
 	log.Printf("auth-service escuchando en %s (env=%s)", addr, cfg.EntornoApp)
@@ -106,8 +139,11 @@ func main() {
 // propia UnidadDeTrabajo, ADR 0017), ensambla Identidad (sin registrar
 // todavía sus rutas: el endpoint GET /identidad/usuarios/{id} necesita el
 // puertos.ValidadorDeAccesos que solo existe una vez montado Acceso),
-// ensambla Acceso completo, y por último registra las rutas de ambos.
-func montarIdentidadYAcceso(ctx context.Context, app *fiber.App, cfg configuracion.Config) {
+// ensambla Acceso completo, monta Confianza (colas de acceso virtual, §12
+// de docs/design/colas-virtuales.md) y por último registra las rutas de
+// los tres. ctxFondo es el context.Context de cierre ordenado para la
+// goroutine del reconciliador de salas de espera (ver main()).
+func montarIdentidadYAcceso(ctx, ctxFondo context.Context, app *fiber.App, cfg configuracion.Config) {
 	dsn := cfg.URLBaseDeDatosAplicacion
 	if dsn == "" {
 		log.Println("api: ALERTA — DATABASE_URL_APLICACION no definido, usando DATABASE_URL (rol dueño/superusuario). " +
@@ -129,6 +165,17 @@ func montarIdentidadYAcceso(ctx context.Context, app *fiber.App, cfg configuraci
 	// puerto EvaluadorConfianza. nil si REDIS_URL no está definido (ambos
 	// contextos caen a su propio no-op, cada uno con su WARN de arranque).
 	riesgo := construirEvaluadorDeRiesgo(cfg)
+
+	// portero es el confianza/puertos.PorteroDeSala que las rutas de
+	// Acceso, Identidad y Tenencia montan como su primer/único middleware
+	// de sala de espera (§12 del diseño colas-virtuales.md). gestorSalas y
+	// consultorSalas alimentan los propios endpoints HTTP de Confianza (§7
+	// del diseño) más abajo, después de montar Tenencia (necesitan el
+	// VerificadorDeAutorizacion que Tenencia expone). Los tres son nil-safe:
+	// sin REDIS_URL, portero es un no-op que nunca encuentra sala vigente
+	// (construirConfianzaColas) y gestorSalas/consultorSalas quedan nil —
+	// en ese caso NO se registran las rutas propias de Confianza (más abajo).
+	portero, gestorSalas, consultorSalas := construirConfianzaColas(ctxFondo, cfg, pool, relojReal, riesgo)
 
 	// --- Identidad: adaptadores y casos de uso (rutas al final) -----------
 
@@ -200,7 +247,7 @@ func montarIdentidadYAcceso(ctx context.Context, app *fiber.App, cfg configuraci
 	// --- Acceso: adaptadores, casos de uso y rutas -------------------------
 
 	validadorAcceso, manejadorAcceso := montarAcceso(cfg, pool, relojReal, autenticadorIdentidad, consultorIdentidad, verificarOTP, riesgo)
-	accesohttp.RegistrarRutas(app, manejadorAcceso, validadorAcceso)
+	accesohttp.RegistrarRutas(app, manejadorAcceso, validadorAcceso, portero)
 
 	// --- Tenencia: adaptadores, casos de uso y rutas -----------------------
 	//
@@ -211,7 +258,7 @@ func montarIdentidadYAcceso(ctx context.Context, app *fiber.App, cfg configuraci
 	// expone (§11.2 del diseño de Tenencia) para construir su propio ACL
 	// (identidadtenencia.AutorizadorConsultas) antes de construir
 	// manejadorIdentidad.
-	autorizadorTenencia, consultorMembresiasTenencia := montarTenencia(cfg, app, pool, relojReal, validadorAcceso, consultorIdentidad, riesgo)
+	autorizadorTenencia, consultorMembresiasTenencia := montarTenencia(cfg, app, pool, relojReal, validadorAcceso, consultorIdentidad, riesgo, portero)
 	autorizadorConsultasIdentidad := identidadtenencia.NuevoAutorizadorConsultas(autorizadorTenencia, consultorMembresiasTenencia)
 
 	manejadorIdentidad := identidadhttp.NuevoManejadorIdentidad(
@@ -221,7 +268,25 @@ func montarIdentidadYAcceso(ctx context.Context, app *fiber.App, cfg configuraci
 
 	// --- Identidad: rutas (ahora sí, con el validador de Acceso) ----------
 
-	identidadhttp.RegistrarRutas(app, manejadorIdentidad, validadorAcceso)
+	identidadhttp.RegistrarRutas(app, manejadorIdentidad, validadorAcceso, portero)
+
+	// --- Confianza: rutas propias (§7 del diseño colas-virtuales.md) ------
+	//
+	// Se montan al final porque los dos endpoints de administración
+	// org-scoped (§7.2) necesitan el VerificadorDeAutorizacion que Tenencia
+	// recién terminó de exponer. Sin REDIS_URL, gestorSalas/consultorSalas
+	// son nil (construirConfianzaColas): no hay nada real que administrar
+	// ni consultar, así que las rutas de Confianza NO se registran en
+	// absoluto (a diferencia de Acceso/Identidad/Tenencia, que siempre
+	// registran las suyas con el portero no-op montado).
+	if gestorSalas != nil && consultorSalas != nil {
+		autorizadorConfianza := confianzatenencia.NuevoVerificadorAutorizacion(autorizadorTenencia)
+		manejadorConfianza := confianzahttp.NuevoManejadorConfianza(portero, gestorSalas, consultorSalas)
+		confianzahttp.RegistrarRutas(app, manejadorConfianza, validadorAcceso, autorizadorConfianza)
+		log.Println("api: contexto Confianza (colas de acceso virtual) montado: rutas propias + middleware en acceso.iniciar_sesion/identidad.registrar_usuario/tenencia.aceptar_invitacion")
+	} else {
+		log.Println("api: colas de acceso virtual en modo no-op (REDIS_URL no configurado) — Acceso/Identidad/Tenencia montan el middleware, pero nunca hay sala vigente; sin rutas propias de Confianza")
+	}
 
 	estadoConfianza := "confianza-noop"
 	if riesgo != nil {
@@ -391,6 +456,7 @@ func montarTenencia(
 	validadorAcceso accesopuertos.ValidadorDeAccesos,
 	consultorIdentidad identidadpuertos.ConsultorDeUsuarios,
 	riesgo confianzapuertos.EvaluadorDeRiesgo,
+	portero confianzapuertos.PorteroDeSala,
 ) (tenenciapuertos.VerificadorDeAutorizacion, tenenciapuertos.ConsultorDeMembresias) {
 	organizaciones := tenenciapostgres.NuevoRepositorioOrganizaciones(pool)
 	membresias := tenenciapostgres.NuevoRepositorioMembresias(pool)
@@ -430,7 +496,7 @@ func montarTenencia(
 	consultas := tenenciaaplicacion.NuevoConsultasCasoDeUso(organizaciones, membresias, autorizador)
 
 	manejador := tenenciahttp.NuevoManejadorTenencia(gestorOrganizaciones, consultas, gestorMembresias, consultas, gestorInvitaciones)
-	tenenciahttp.RegistrarRutas(app, manejador, validadorAcceso, autorizador, alcance)
+	tenenciahttp.RegistrarRutas(app, manejador, validadorAcceso, autorizador, alcance, portero)
 
 	estadoConfianza := "confianza-noop"
 	if riesgo != nil {
@@ -475,6 +541,107 @@ func construirEvaluadorDeRiesgo(cfg configuracion.Config) confianzapuertos.Evalu
 	slog.Info("api: motor de Confianza real montado (rate limiting por IP y por cuenta vía Redis + captcha Cloudflare Turnstile)",
 		"redis_configurado", true, "turnstile_secret_configurado", cfg.TurnstileSecretKey != "")
 	return evaluarTrustSignal
+}
+
+// construirConfianzaColas ensambla el motor de colas de acceso virtual
+// (Confianza, docs/design/colas-virtuales.md §12): el PorteroDeSala de
+// camino caliente que consumen los tres middlewares de Acceso/Identidad/
+// Tenencia, y —solo si REDIS_URL está configurado— el GestorDeSalasDeEspera
+// y el ConsultorDeSalas que alimentan las rutas propias de administración/
+// consulta de Confianza (registradas más abajo, después de montar
+// Tenencia). Arranca además el reconciliador (§3.7) como goroutine con
+// time.Ticker(15s), atada a ctxFondo para un cierre ordenado (ver main()).
+//
+// Sin REDIS_URL: devuelve el portero no-op de
+// confianza/adaptadores/porteronoop (nunca hay sala vigente, con su WARN de
+// arranque — mismo criterio que EvaluadorConfianzaNoOp) y (nil, nil) para
+// gestorSalas/consultorSalas: INV-COLA-08 hace que un motor sin Redis no
+// tenga nada real que administrar.
+func construirConfianzaColas(
+	ctxFondo context.Context,
+	cfg configuracion.Config,
+	pool *pgxpool.Pool,
+	relojReal reloj.Real,
+	riesgo confianzapuertos.EvaluadorDeRiesgo,
+) (confianzapuertos.PorteroDeSala, confianzapuertos.GestorDeSalasDeEspera, confianzapuertos.ConsultorDeSalas) {
+	if cfg.URLRedis == "" {
+		return porteronoop.NuevoPorteroDeSala(nil), nil, nil
+	}
+
+	clienteRedis, err := cache.NuevoClienteRedis(cfg.URLRedis)
+	if err != nil {
+		log.Fatalf("api: REDIS_URL definido pero inválido (Confianza/colas de acceso virtual): %v", err)
+	}
+	estadoCola := confianzaredis.NuevoEstadoCola(clienteRedis)
+	repoSalas := confianzapostgres.NuevoRepositorioSalasDeEspera(pool)
+	uow := confianzapostgres.NuevaUnidadDeTrabajo(pool)
+	generadorIDs := confianzapostgres.NuevoGeneradorIDs()
+	generadorTickets := confianzacripto.NuevoGeneradorTickets()
+	registroAuditoria := confianzaauditoria.NuevoRegistroAuditoria(pool)
+
+	instantanea := confianzaaplicacion.NuevaInstantaneaSalasVigentes()
+	reconciliador := confianzaaplicacion.NuevoReconciliarSalasCasoDeUso(repoSalas, estadoCola, relojReal, instantanea)
+	portero := confianzaaplicacion.NuevoPorteroDeSalaCasoDeUso(instantanea, estadoCola, generadorTickets, relojReal, riesgo)
+
+	abrirSala := confianzaaplicacion.NuevoAbrirSalaCasoDeUso(repoSalas, estadoCola, registroAuditoria, relojReal, generadorIDs, uow)
+	cambiarRitmo := confianzaaplicacion.NuevoCambiarRitmoDeAdmisionCasoDeUso(repoSalas, estadoCola, registroAuditoria, relojReal, uow)
+	cambiarEstado := confianzaaplicacion.NuevoCambiarEstadoSalaCasoDeUso(repoSalas, estadoCola, registroAuditoria, relojReal, uow)
+	gestorSalas := gestorSalasDeEsperaCompuesto{abrir: abrirSala, cambiarRitmo: cambiarRitmo, cambiarEstado: cambiarEstado}
+	consultorSalas := confianzaaplicacion.NuevoConsultarSalaCasoDeUso(instantanea, estadoCola)
+
+	// Ciclo inicial síncrono: una sala que ya estaba abierta en Postgres
+	// antes de que este proceso arrancara queda protegida desde la primera
+	// petición, no recién a los 15s del primer tick.
+	if errRecon := reconciliador.Reconciliar(context.Background()); errRecon != nil {
+		slog.Error("api: el primer ciclo del reconciliador de colas de acceso virtual falló; se reintentará en el próximo tick (15s)",
+			"error", errRecon)
+	}
+
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctxFondo.Done():
+				slog.Info("api: reconciliador de colas de acceso virtual detenido (apagado ordenado)")
+				return
+			case <-ticker.C:
+				if errRecon := reconciliador.Reconciliar(ctxFondo); errRecon != nil {
+					slog.Error("api: ciclo del reconciliador de colas de acceso virtual falló", "error", errRecon)
+				}
+			}
+		}
+	}()
+
+	slog.Info("api: motor de colas de acceso virtual (Confianza) montado (postgres+redis, reconciliador cada 15s)")
+	return portero, gestorSalas, consultorSalas
+}
+
+// gestorSalasDeEsperaCompuesto implementa confianza/puertos.
+// GestorDeSalasDeEspera delegando cada método al caso de uso de aplicacion
+// que efectivamente lo implementa (§3.1-§3.3 del diseño colas-virtuales.md:
+// Abrir/CambiarRitmo/CambiarEstado son tres casos de uso separados que,
+// juntos, satisfacen el puerto de administración) — mismo criterio de
+// composición exacto que gestorMFACompuesto para
+// identidad/puertos.GestorDeMFA, más arriba en este archivo.
+type gestorSalasDeEsperaCompuesto struct {
+	abrir         *confianzaaplicacion.AbrirSalaCasoDeUso
+	cambiarRitmo  *confianzaaplicacion.CambiarRitmoDeAdmisionCasoDeUso
+	cambiarEstado *confianzaaplicacion.CambiarEstadoSalaCasoDeUso
+}
+
+var _ confianzapuertos.GestorDeSalasDeEspera = gestorSalasDeEsperaCompuesto{}
+
+func (g gestorSalasDeEsperaCompuesto) Abrir(ctx context.Context, cmd confianzapuertos.ComandoAbrirSala) (confianzapuertos.VistaSala, error) {
+	return g.abrir.Abrir(ctx, cmd)
+}
+
+func (g gestorSalasDeEsperaCompuesto) CambiarRitmo(ctx context.Context, cmd confianzapuertos.ComandoCambiarRitmoAdmision) (confianzapuertos.VistaSala, error) {
+	return g.cambiarRitmo.CambiarRitmo(ctx, cmd)
+}
+
+func (g gestorSalasDeEsperaCompuesto) CambiarEstado(ctx context.Context, cmd confianzapuertos.ComandoCambiarEstadoSala) (confianzapuertos.VistaSala, error) {
+	return g.cambiarEstado.CambiarEstado(ctx, cmd)
 }
 
 // construirCifradorSecretosMFA implementa el mismo criterio de gestión de

@@ -1,6 +1,9 @@
 package dominio
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // Errores de dominio tipados (§1.8 del diseño). Se implementan como tipos
 // propios (no errors.New ad hoc) para que la capa de aplicación pueda
@@ -244,4 +247,20 @@ type ErrEstadoDeColaNoDisponible struct{ Motivo string }
 
 func (e *ErrEstadoDeColaNoDisponible) Error() string {
 	return "el estado de la cola no está disponible: " + e.Motivo
+}
+
+// ErrIngresoDenegadoPorConfianza se produce cuando EvaluadorDeRiesgo deniega
+// el ingreso a una sala (accion=AccionIngresoASala, §12 del diseño
+// colas-virtuales.md): el único freno contra el farming de tickets (§3.4
+// paso 2, §4 INV-COLA-04). Ingresar falla ANTES de generar el ticket — mismo
+// criterio exacto que identidad/dominio.ErrAccesoDenegadoPorConfianza en
+// Registrar/AutenticarUsuario, con el mismo tratamiento HTTP (429 +
+// Retry-After, ver confianza/adaptadores/http/errores_http.go).
+type ErrIngresoDenegadoPorConfianza struct {
+	Motivo       string
+	ReintentarEn time.Duration
+}
+
+func (e *ErrIngresoDenegadoPorConfianza) Error() string {
+	return "ingreso a sala denegado por confianza: " + e.Motivo
 }

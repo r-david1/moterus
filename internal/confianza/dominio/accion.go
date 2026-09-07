@@ -43,4 +43,12 @@ const (
 	// AccionCierreMasivoSesiones): usa el literal "verificar_otp", que debe
 	// coincidir textualmente con este valor.
 	AccionVerificarOTP Accion = "verificar_otp"
+	// AccionIngresoASala es la acción que agrega la extensión de colas de
+	// acceso virtual (§12 de docs/design/colas-virtuales.md): la evalúa
+	// aplicacion.PorteroDeSalaCasoDeUso.Ingresar, ANTES de emitir el ticket
+	// (§3.4 paso 2 del diseño), como único freno contra el farming de
+	// tickets (§4, INV-COLA-04 — comprar prioridad, no capacidad). Es
+	// pre-autenticación por definición (igual que AccionRegistro): no hay
+	// cuenta que limitar, solo IP (ver umbral.go).
+	AccionIngresoASala Accion = "ingreso_a_sala"
 )

@@ -294,8 +294,8 @@ func nuevoServidorAccesoInterno(t *testing.T, pool *pgxpool.Pool, confianzaReal 
 	manejadorAcceso := accesohttp.NuevoManejadorAcceso(iniciador, renovador, cerrador, consultorSesiones, firmador, completadorSegundoFactor)
 
 	app := fiber.New(fiber.Config{DisableStartupMessage: true})
-	accesohttp.RegistrarRutas(app, manejadorAcceso, validador)
-	identidadhttp.RegistrarRutas(app, manejadorIdentidad, validador)
+	accesohttp.RegistrarRutas(app, manejadorAcceso, validador, nil)
+	identidadhttp.RegistrarRutas(app, manejadorIdentidad, validador, nil)
 	return servidorAccesoDePrueba{App: app, EmisorStepUp: emisorStepUp}
 }
 

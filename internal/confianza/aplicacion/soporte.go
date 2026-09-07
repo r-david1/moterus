@@ -129,6 +129,7 @@ func vistaSalaVigenteDesde(sala *dominio.SalaDeEspera) puertos.VistaSalaVigente 
 		Clave:         sala.Clave().String(),
 		Estado:        sala.Estado().String(),
 		ModoDegradado: sala.Politica().ModoDegradado().String(),
+		RitmoAdmision: sala.Politica().RitmoAdmision().PorSegundo(),
 	}
 }
 

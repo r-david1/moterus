@@ -27,10 +27,13 @@ const prefijo = "/confianza"
 // (confianza/adaptadores/tenencia.VerificadorAutorizacion), montado como
 // middleware de autorización (§7.2).
 //
-// Esta función NO se invoca todavía desde cmd/api/main.go (tarea
-// posterior, §12 del diseño): tampoco monta MiddlewareSalaDeEspera sobre
-// ninguna ruta de otro contexto — eso también es la tarea posterior, junto
-// con la acción AccionIngresoASala del catálogo de Confianza (§12).
+// cmd/api/main.go invoca esta función (solo si REDIS_URL está configurado:
+// sin Redis no hay nada real que administrar ni consultar, INV-COLA-08) y
+// además monta MiddlewareSalaDeEspera sobre las tres rutas del catálogo
+// cerrado en Acceso/Identidad/Tenencia — ver acceso/adaptadores/http/
+// rutas.go, identidad/adaptadores/http/rutas.go y
+// tenencia/adaptadores/http/rutas.go, y la acción AccionIngresoASala en
+// confianza/dominio/accion.go (§12 del diseño).
 //
 // Rutas de metadatos (OpenAPI/docs/schemas) con prefijo propio: cada
 // contexto monta su propia instancia de huma.API sobre el mismo *fiber.App
@@ -55,7 +58,7 @@ func RegistrarRutas(app *fiber.App, m *ManejadorConfianza, validador accesopuert
 
 	metaPublico := map[string]any{
 		"x-auth-nivel": "publico-sin-token",
-		"x-rate-limit": "ADR 0018/§12 del diseño colas-virtuales.md: EvaluadorDeRiesgo, accion=ingreso_a_sala (20/min por IP) — cableado pendiente de la tarea de integración con otros contextos (§12).",
+		"x-rate-limit": "ADR 0018/§12 del diseño colas-virtuales.md: EvaluadorDeRiesgo, accion=ingreso_a_sala (20/min por IP), evaluado en aplicacion.PorteroDeSalaCasoDeUso.Ingresar antes de emitir el ticket.",
 	}
 	metaBearer := func(permiso string) map[string]any {
 		return map[string]any{

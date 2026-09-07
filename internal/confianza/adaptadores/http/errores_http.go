@@ -59,6 +59,10 @@ func mapearErrorDominio(ctx context.Context, err error) error {
 		errIDUsuarioInvalido      *dominio.ErrIDUsuarioInvalido
 		errDireccionIPInvalida    *dominio.ErrDireccionIPInvalida
 
+		// 429 — Confianza denegó el ingreso (§12 del diseño: accion=
+		// ingreso_a_sala, único freno contra el farming de tickets)
+		errIngresoDenegadoPorConfianza *dominio.ErrIngresoDenegadoPorConfianza
+
 		// 503 — bloqueo de la propia sala (§1.8 del diseño; solo alcanzable
 		// hoy desde un endpoint público si el estado de la cola cambia
 		// entre SalaVigentePara y el script Lua, o desde el reconciliador)
@@ -135,6 +139,20 @@ func mapearErrorDominio(ctx context.Context, err error) error {
 
 	case errors.As(err, &errDireccionIPInvalida):
 		return huma.Error422UnprocessableEntity(errDireccionIPInvalida.Error())
+
+	case errors.As(err, &errIngresoDenegadoPorConfianza):
+		// Mismo criterio exacto que identidad/adaptadores/http/errores_http.go
+		// para ErrAccesoDenegadoPorConfianza: 429 sin Retry-After si el
+		// motivo no trae backoff, con la cabecera (redondeada hacia arriba,
+		// mínimo 1s) si sí lo trae.
+		if errIngresoDenegadoPorConfianza.ReintentarEn <= 0 {
+			return huma.Error429TooManyRequests("ingreso a sala denegado por evaluación de riesgo")
+		}
+		segundos := int(errIngresoDenegadoPorConfianza.ReintentarEn.Seconds())
+		if segundos < 1 {
+			segundos = 1
+		}
+		return conRetryAfter(huma.Error429TooManyRequests("ingreso a sala denegado por evaluación de riesgo"), segundos)
 
 	case errors.As(err, &errColaLlena):
 		return conRetryAfter(huma.Error503ServiceUnavailable("la cola de la sala de espera está llena"), retryColaLlenaSegundos)

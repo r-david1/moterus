@@ -33,7 +33,7 @@ func instantaneaConSala(t *testing.T, sala *dominio.SalaDeEspera) *aplicacion.In
 }
 
 func nuevoPorteroDeSala(instantanea *aplicacion.InstantaneaSalasVigentes, estadoCola *mocks.EstadoDeCola, tickets *mocks.GeneradorTickets, reloj *mocks.Reloj) *aplicacion.PorteroDeSalaCasoDeUso {
-	return aplicacion.NuevoPorteroDeSalaCasoDeUso(instantanea, estadoCola, tickets, reloj)
+	return aplicacion.NuevoPorteroDeSalaCasoDeUso(instantanea, estadoCola, tickets, reloj, &mocks.EvaluadorDeRiesgo{})
 }
 
 // --- INV-COLA-08: el camino caliente nunca toca Postgres --------------------
@@ -52,6 +52,7 @@ func TestPorteroDeSalaCasoDeUso_NuncaDependeDeRepositorioSalasDeEspera(t *testin
 		puertos.EstadoDeCola,
 		puertos.GeneradorTickets,
 		puertos.Reloj,
+		puertos.EvaluadorDeRiesgo,
 	) *aplicacion.PorteroDeSalaCasoDeUso = aplicacion.NuevoPorteroDeSalaCasoDeUso
 }
 
@@ -139,6 +140,36 @@ func TestPorteroDeSalaCasoDeUso_Ingresar_ColaLlena(t *testing.T) {
 	var errColaLlena *dominio.ErrColaLlena
 	if !errors.As(err, &errColaLlena) {
 		t.Fatalf("se esperaba *ErrColaLlena, obtuvo %T: %v", err, err)
+	}
+}
+
+// TestPorteroDeSalaCasoDeUso_Ingresar_DenegadoPorConfianza verifica §12 del
+// diseño: un rechazo de EvaluadorDeRiesgo (accion=ingreso_a_sala) corta el
+// flujo ANTES de generar el ticket — ni GeneradorTickets.GenerarTicket ni
+// EstadoDeCola.Ingresar deben invocarse.
+func TestPorteroDeSalaCasoDeUso_Ingresar_DenegadoPorConfianza(t *testing.T) {
+	ahora := ahoraDePrueba()
+	sala := salaAbiertaDePrueba(t, idSalaValido1, 50, ahora)
+	instantanea := instantaneaConSala(t, sala)
+	estadoCola := &mocks.EstadoDeCola{}
+	tickets := &mocks.GeneradorTickets{}
+	riesgo := &mocks.EvaluadorDeRiesgo{
+		FnEvaluar: func(ctx context.Context, s puertos.Solicitud) (dominio.Decision, error) {
+			return dominio.Decision{Permitido: false, Motivo: "limite_ip_excedido", ReintentarEn: 30 * time.Second}, nil
+		},
+	}
+	portero := aplicacion.NuevoPorteroDeSalaCasoDeUso(instantanea, estadoCola, tickets, &mocks.Reloj{Fija: ahora}, riesgo)
+
+	_, err := portero.Ingresar(context.Background(), puertos.ComandoIngresarASala{Alias: "evento-" + idSalaValido1})
+	var errDenegado *dominio.ErrIngresoDenegadoPorConfianza
+	if !errors.As(err, &errDenegado) {
+		t.Fatalf("se esperaba *ErrIngresoDenegadoPorConfianza, obtuvo %T: %v", err, err)
+	}
+	if len(estadoCola.LlamadasIngresar) != 0 {
+		t.Error("EstadoDeCola.Ingresar no debía invocarse tras un rechazo de Confianza")
+	}
+	if len(riesgo.LlamadasEvaluar) != 1 || riesgo.LlamadasEvaluar[0].Accion != dominio.AccionIngresoASala {
+		t.Errorf("se esperaba una llamada a Evaluar con accion=ingreso_a_sala, llamadas = %v", riesgo.LlamadasEvaluar)
 	}
 }
 

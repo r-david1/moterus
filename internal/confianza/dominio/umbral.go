@@ -66,6 +66,14 @@ type PoliticaLimites map[Accion]LimitesPorAccion
 //     son en la práctica la misma IP (tenencia/aplicacion.claveCuentaPorIP
 //     no conoce el correo del sujeto en este punto del flujo), así que se
 //     fija el mismo umbral en las dos.
+//   - ingreso_a_sala:           IP 20/min · sin límite por cuenta (§12 de
+//     docs/design/colas-virtuales.md) — no hay cuenta que limitar (el
+//     ingreso a una sala es pre-autenticación); el ingreso es barato y no
+//     hay secreto que adivinar, así que el único objetivo es acotar el
+//     farming de tickets (§4, INV-COLA-04), no frenar a una oficina tras
+//     NAT. Deliberadamente más laxo que login/registro. Sin esta entrada
+//     explícita, Para() aplicaría el default fail-safe de 3/min por IP y
+//     rompería salas legítimas.
 func PoliticaLimitesPorDefecto() PoliticaLimites {
 	return PoliticaLimites{
 		AccionLogin: {
@@ -109,6 +117,17 @@ func PoliticaLimitesPorDefecto() PoliticaLimites {
 		AccionVerificarOTP: {
 			IP:     Umbral{Limite: 20, Ventana: 15 * time.Minute},
 			Cuenta: Umbral{Limite: 5, Ventana: 15 * time.Minute},
+		},
+		// ingreso_a_sala: 20/min por IP, sin límite por cuenta (§12 del
+		// diseño colas-virtuales.md: no hay cuenta que limitar, es
+		// pre-autenticación). El campo Cuenta nunca se evalúa en la
+		// práctica porque aplicacion.PorteroDeSalaCasoDeUso.Ingresar llama a
+		// Evaluar con CorreoNormalizado="" (EvaluarTrustSignalCasoDeUso solo
+		// aplica el límite por cuenta cuando ese campo no está vacío); se
+		// deja igual al de IP por documentación, no por necesidad.
+		AccionIngresoASala: {
+			IP:     Umbral{Limite: 20, Ventana: time.Minute},
+			Cuenta: Umbral{Limite: 20, Ventana: time.Minute},
 		},
 	}
 }

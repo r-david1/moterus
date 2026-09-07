@@ -9,6 +9,9 @@ import (
 	"github.com/gofiber/fiber/v2"
 
 	accesopuertos "github.com/r-david1/moterus/internal/acceso/puertos"
+	confianzahttp "github.com/r-david1/moterus/internal/confianza/adaptadores/http"
+	confianzadominio "github.com/r-david1/moterus/internal/confianza/dominio"
+	confianzapuertos "github.com/r-david1/moterus/internal/confianza/puertos"
 )
 
 // prefijo es el prefijo de ruta de todos los endpoints de Identidad.
@@ -37,7 +40,15 @@ const prefijo = "/identidad"
 // nil, el endpoint se registra sin el middleware y queda público, igual
 // que antes de esta migración. cmd/api/main.go SIEMPRE debe pasar el
 // validador real.
-func RegistrarRutas(app *fiber.App, m *ManejadorIdentidad, validador accesopuertos.ValidadorDeAccesos) huma.API {
+// portero es el confianza/puertos.PorteroDeSala que confianzahttp.
+// MiddlewareSalaDeEspera consume para proteger POST /identidad/usuarios
+// (§12 de docs/design/colas-virtuales.md: identidad.registrar_usuario,
+// alcance sistema). Puede ir nil ÚNICAMENTE por el mismo motivo que
+// validador puede ir nil (no romper los tests de integración existentes de
+// este paquete): con nil, el endpoint se registra sin el middleware, igual
+// que antes de esta extensión. cmd/api/main.go SIEMPRE pasa un portero
+// real (Redis) o el no-op de confianza/adaptadores/porteronoop, nunca nil.
+func RegistrarRutas(app *fiber.App, m *ManejadorIdentidad, validador accesopuertos.ValidadorDeAccesos, portero confianzapuertos.PorteroDeSala) huma.API {
 	app.Use(middlewareOrigenSolicitud)
 
 	api := humafiber.NewV2(app, huma.DefaultConfig("Identidad", "0.1.0"))
@@ -48,15 +59,29 @@ func RegistrarRutas(app *fiber.App, m *ManejadorIdentidad, validador accesopuert
 		"x-adr-frontera": "ADR 0009: no emite JWT ni sesión; ver docs/adr/0009-frontera-identidad-acceso.md",
 	}
 
-	huma.Register(api, huma.Operation{
+	metadatosRegistrarUsuario := map[string]any{
+		"x-auth-nivel":   metadatosEndpointPublico["x-auth-nivel"],
+		"x-rate-limit":   metadatosEndpointPublico["x-rate-limit"],
+		"x-adr-frontera": metadatosEndpointPublico["x-adr-frontera"],
+		"x-sala-espera": "ruta protegible identidad.registrar_usuario, alcance sistema " +
+			"(docs/design/colas-virtuales.md §1.6/§12): MiddlewareSalaDeEspera montado primero en la cadena (INV-COLA-09).",
+	}
+	opRegistrarUsuario := huma.Operation{
 		OperationID: "identidad-registrar-usuario",
 		Method:      http.MethodPost,
 		Path:        prefijo + "/usuarios",
 		Summary:     "Registrar un usuario nuevo",
 		Description: "Alta de usuario en estado pendiente_verificacion (INV-ID-07). Público, sin token: es el propio alta de la cuenta.",
 		Tags:        []string{"Identidad"},
-		Metadata:    metadatosEndpointPublico,
-	}, m.Registrar)
+		Metadata:    metadatosRegistrarUsuario,
+	}
+	if portero != nil {
+		opRegistrarUsuario.Middlewares = huma.Middlewares{confianzahttp.MiddlewareSalaDeEspera(api, portero, confianzadominio.RutaIdentidadRegistrarUsuario)}
+	} else {
+		slog.Warn("identidad/adaptadores/http: RegistrarRutas se llamó sin portero de Confianza — " +
+			"POST /identidad/usuarios queda sin sala de espera. NO USAR EN PRODUCCIÓN.")
+	}
+	huma.Register(api, opRegistrarUsuario, m.Registrar)
 
 	huma.Register(api, huma.Operation{
 		OperationID: "identidad-autenticar",

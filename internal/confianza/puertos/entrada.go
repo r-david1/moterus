@@ -133,6 +133,10 @@ type VistaSalaVigente struct {
 	Clave         string
 	Estado        string // "abierta" | "drenando"
 	ModoDegradado string // "permitir" | "rechazar"
+	// RitmoAdmision no lo usa el middleware (§7.3): lo agrega
+	// ConsultorDeSalas (endpoint público agregado, §7.1) para estimar la
+	// ETA a partir de la longitud aproximada sin volver a tocar Postgres.
+	RitmoAdmision int
 }
 
 // ComandoIngresarASala transporta la entrada de PorteroDeSala.Ingresar.

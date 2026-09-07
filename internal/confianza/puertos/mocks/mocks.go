@@ -14,6 +14,39 @@ import (
 	"github.com/r-david1/moterus/internal/confianza/puertos"
 )
 
+// --- EvaluadorDeRiesgo (entrada) ---------------------------------------------
+
+// EvaluadorDeRiesgo es el test double de puertos.EvaluadorDeRiesgo. Por
+// defecto (FnEvaluar sin configurar) siempre permite, sin motivo ni
+// reintento: el camino feliz más común para un test de
+// PorteroDeSalaCasoDeUso.Ingresar que no está ejercitando el freno de
+// farming de tickets (§12 del diseño colas-virtuales.md).
+type EvaluadorDeRiesgo struct {
+	FnEvaluar            func(ctx context.Context, s puertos.Solicitud) (dominio.Decision, error)
+	FnRegistrarResultado func(ctx context.Context, r puertos.ResultadoIntento) error
+
+	LlamadasEvaluar            []puertos.Solicitud
+	LlamadasRegistrarResultado []puertos.ResultadoIntento
+}
+
+var _ puertos.EvaluadorDeRiesgo = (*EvaluadorDeRiesgo)(nil)
+
+func (m *EvaluadorDeRiesgo) Evaluar(ctx context.Context, s puertos.Solicitud) (dominio.Decision, error) {
+	m.LlamadasEvaluar = append(m.LlamadasEvaluar, s)
+	if m.FnEvaluar != nil {
+		return m.FnEvaluar(ctx, s)
+	}
+	return dominio.Decision{Permitido: true}, nil
+}
+
+func (m *EvaluadorDeRiesgo) RegistrarResultado(ctx context.Context, r puertos.ResultadoIntento) error {
+	m.LlamadasRegistrarResultado = append(m.LlamadasRegistrarResultado, r)
+	if m.FnRegistrarResultado != nil {
+		return m.FnRegistrarResultado(ctx, r)
+	}
+	return nil
+}
+
 // --- LimitadorTasa -----------------------------------------------------------
 
 // LimitadorTasa es el test double de puertos.LimitadorTasa. Por defecto

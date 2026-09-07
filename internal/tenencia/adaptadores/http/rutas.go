@@ -1,6 +1,7 @@
 package http
 
 import (
+	"log/slog"
 	"net/http"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -8,6 +9,9 @@ import (
 	"github.com/gofiber/fiber/v2"
 
 	accesopuertos "github.com/r-david1/moterus/internal/acceso/puertos"
+	confianzahttp "github.com/r-david1/moterus/internal/confianza/adaptadores/http"
+	confianzadominio "github.com/r-david1/moterus/internal/confianza/dominio"
+	confianzapuertos "github.com/r-david1/moterus/internal/confianza/puertos"
 	"github.com/r-david1/moterus/internal/tenencia/dominio"
 	"github.com/r-david1/moterus/internal/tenencia/puertos"
 )
@@ -35,7 +39,19 @@ const prefijo = "/tenencia"
 // patrón para no repetirlo: sin el override, tres instancias de huma.API
 // competirían por /openapi.json, /docs y /schemas/*, y Fiber serviría solo
 // la primera registrada.
-func RegistrarRutas(app *fiber.App, m *ManejadorTenencia, validador accesopuertos.ValidadorDeAccesos, autorizador puertos.VerificadorDeAutorizacion, alcance puertos.AlcanceDeTenencia) huma.API {
+// portero es el confianza/puertos.PorteroDeSala que confianzahttp.
+// MiddlewareSalaDeEspera consume para proteger POST
+// /tenencia/invitaciones/aceptaciones (§12 de docs/design/colas-virtuales.md:
+// tenencia.aceptar_invitacion, alcance sistema). Se monta ANTES del
+// middleware de autenticación de Tenencia (§1.1/§7.3 del diseño: "la clave
+// es la ruta, no necesita sujeto"). cmd/api/main.go pasa el adaptador real
+// (Redis) o confianza/adaptadores/porteronoop si REDIS_URL no está
+// configurada. Puede ir nil ÚNICAMENTE para no romper los tests de
+// integración existentes de este paquete (mismo criterio que
+// identidad/adaptadores/http.RegistrarRutas frente a validador nil): con
+// nil, el endpoint se registra sin el middleware, igual que antes de esta
+// extensión.
+func RegistrarRutas(app *fiber.App, m *ManejadorTenencia, validador accesopuertos.ValidadorDeAccesos, autorizador puertos.VerificadorDeAutorizacion, alcance puertos.AlcanceDeTenencia, portero confianzapuertos.PorteroDeSala) huma.API {
 	app.Use(middlewareOrigenSolicitud)
 
 	cfg := huma.DefaultConfig("Tenencia", "0.1.0")
@@ -222,6 +238,22 @@ func RegistrarRutas(app *fiber.App, m *ManejadorTenencia, validador accesopuerto
 		Middlewares:   conPermiso(dominio.PermisoMiembroInvitar),
 	}, m.RevocarInvitacion)
 
+	metaAceptarInvitacion := metaBearer("", rateLimitAceptarInvitacion)
+	metaAceptarInvitacion["x-sala-espera"] = "ruta protegible tenencia.aceptar_invitacion, alcance sistema " +
+		"(docs/design/colas-virtuales.md §1.6/§12): MiddlewareSalaDeEspera montado ANTES de la autenticación (§7.3: \"la clave es la ruta, no necesita sujeto\")."
+	middlewaresAceptarInvitacion := soloAutenticado
+	if portero != nil {
+		// MiddlewareSalaDeEspera PRIMERO: §1.1/§7.3 del diseño — la clave de
+		// esta ruta sale de la ruta misma, no del sujeto autenticado, así
+		// que no hace falta esperar a la autenticación de Tenencia.
+		middlewaresAceptarInvitacion = huma.Middlewares{
+			confianzahttp.MiddlewareSalaDeEspera(api, portero, confianzadominio.RutaTenenciaAceptarInvitacion),
+			autenticacion,
+		}
+	} else {
+		slog.Warn("tenencia/adaptadores/http: RegistrarRutas se llamó sin portero de Confianza — " +
+			"POST /tenencia/invitaciones/aceptaciones queda sin sala de espera. NO USAR EN PRODUCCIÓN.")
+	}
 	huma.Register(api, huma.Operation{
 		OperationID:   "tenencia-aceptar-invitacion",
 		Method:        http.MethodPost,
@@ -230,8 +262,8 @@ func RegistrarRutas(app *fiber.App, m *ManejadorTenencia, validador accesopuerto
 		Description:   "Requiere autenticación (Bearer) pero NO autorización de Tenencia: quien acepta no es miembro todavía (§3.5 del diseño). Deliberadamente fuera de /organizaciones/{id} (el cliente que llega desde el enlace del correo tiene el token, no el ID de la organización). Token desconocido, malformado, revocado, ya aceptado, expirado o de destinatario distinto producen la MISMA respuesta observable (INV-TEN-24).",
 		DefaultStatus: http.StatusCreated,
 		Tags:          []string{"Tenencia"},
-		Metadata:      metaBearer("", rateLimitAceptarInvitacion),
-		Middlewares:   soloAutenticado,
+		Metadata:      metaAceptarInvitacion,
+		Middlewares:   middlewaresAceptarInvitacion,
 	}, m.AceptarInvitacion)
 
 	return api

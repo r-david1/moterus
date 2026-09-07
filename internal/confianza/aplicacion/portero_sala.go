@@ -105,6 +105,7 @@ type PorteroDeSalaCasoDeUso struct {
 	estadoCola  puertos.EstadoDeCola
 	tickets     puertos.GeneradorTickets
 	reloj       puertos.Reloj
+	riesgo      puertos.EvaluadorDeRiesgo
 }
 
 var _ puertos.PorteroDeSala = (*PorteroDeSalaCasoDeUso)(nil)
@@ -112,17 +113,26 @@ var _ puertos.PorteroDeSala = (*PorteroDeSalaCasoDeUso)(nil)
 // NuevoPorteroDeSalaCasoDeUso construye el caso de uso con sus dependencias
 // inyectadas por puerto. instantanea se comparte con
 // ReconciliarSalasCasoDeUso (ver el comentario de InstantaneaSalasVigentes).
+// riesgo es el propio puertos.EvaluadorDeRiesgo de Confianza
+// (aplicacion.EvaluarTrustSignalCasoDeUso, ya ensamblado): a diferencia de
+// EvaluadorConfianzaReal en Identidad/Acceso/Tenencia, acá NO hace falta un
+// ACL — Ingresar y EvaluarTrustSignalCasoDeUso.Evaluar viven en el mismo
+// paquete aplicacion, del mismo bounded context, así que un caso de uso
+// invoca al otro directamente por su puerto de entrada (§12 del diseño
+// colas-virtuales.md).
 func NuevoPorteroDeSalaCasoDeUso(
 	instantanea *InstantaneaSalasVigentes,
 	estadoCola puertos.EstadoDeCola,
 	tickets puertos.GeneradorTickets,
 	reloj puertos.Reloj,
+	riesgo puertos.EvaluadorDeRiesgo,
 ) *PorteroDeSalaCasoDeUso {
 	return &PorteroDeSalaCasoDeUso{
 		instantanea: instantanea,
 		estadoCola:  estadoCola,
 		tickets:     tickets,
 		reloj:       reloj,
+		riesgo:      riesgo,
 	}
 }
 
@@ -146,12 +156,28 @@ func (c *PorteroDeSalaCasoDeUso) Ingresar(ctx context.Context, cmd puertos.Coman
 		return puertos.ResultadoTurno{}, &dominio.ErrSalaNoEncontrada{Referencia: cmd.Alias}
 	}
 
-	// TODO(§12): evaluar con dominio.AccionIngresoASala cuando exista en el
-	// catálogo cerrado de acciones (dominio/accion.go) — es el único freno
-	// contra el farming de tickets (§3.4 paso 2 y §4 INV-COLA-04 del
-	// diseño). No se invoca todavía: la acción es un cambio aditivo
-	// posterior (§12) y este caso de uso no debe depender de un tipo que
-	// esta extensión todavía no declara.
+	// §3.4 paso 2 del diseño / §12: evaluar con dominio.AccionIngresoASala,
+	// el único freno contra el farming de tickets (§4, INV-COLA-04). Sin
+	// ACL: EvaluarTrustSignalCasoDeUso vive en este mismo paquete
+	// aplicacion, del mismo bounded context, así que c.riesgo se invoca
+	// directo por su puerto de entrada. CorreoNormalizado queda vacío a
+	// propósito (no hay cuenta que limitar, es pre-autenticación): el
+	// umbral de ingreso_a_sala (dominio/umbral.go) solo tiene sentido por
+	// IP. Un rechazo falla ANTES de generar el ticket, mismo criterio que
+	// el resto de los rechazos de Confianza en Identidad/Acceso.
+	decision, err := c.riesgo.Evaluar(ctx, puertos.Solicitud{
+		Accion:   dominio.AccionIngresoASala,
+		IPOrigen: cmd.Origen.IP().String(),
+	})
+	if err != nil {
+		return puertos.ResultadoTurno{}, err
+	}
+	if !decision.Permitido {
+		return puertos.ResultadoTurno{}, &dominio.ErrIngresoDenegadoPorConfianza{
+			Motivo:       decision.Motivo,
+			ReintentarEn: decision.ReintentarEn,
+		}
+	}
 
 	plano, err := c.tickets.GenerarTicket()
 	if err != nil {

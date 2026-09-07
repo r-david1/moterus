@@ -213,8 +213,8 @@ func nuevoServidorTenencia(t *testing.T, pool *pgxpool.Pool) (*fiber.App, *captu
 	manejadorAcceso := accesohttp.NuevoManejadorAcceso(iniciador, renovador, cerrador, consultorSesiones, firmador, nil)
 
 	app := fiber.New(fiber.Config{DisableStartupMessage: true})
-	accesohttp.RegistrarRutas(app, manejadorAcceso, validador)
-	identidadhttp.RegistrarRutas(app, manejadorIdentidad, validador)
+	accesohttp.RegistrarRutas(app, manejadorAcceso, validador, nil)
+	identidadhttp.RegistrarRutas(app, manejadorIdentidad, validador, nil)
 
 	// --- Tenencia ---------------------------------------------------------------
 	organizaciones := tenenciapostgres.NuevoRepositorioOrganizaciones(pool)
@@ -249,7 +249,7 @@ func nuevoServidorTenencia(t *testing.T, pool *pgxpool.Pool) (*fiber.App, *captu
 	consultas := tenenciaaplicacion.NuevoConsultasCasoDeUso(organizaciones, membresias, autorizador)
 
 	manejadorTenencia := tenenciahttp.NuevoManejadorTenencia(gestorOrganizaciones, consultas, gestorMembresias, consultas, gestorInvitaciones)
-	tenenciahttp.RegistrarRutas(app, manejadorTenencia, validador, autorizador, alcance)
+	tenenciahttp.RegistrarRutas(app, manejadorTenencia, validador, autorizador, alcance, nil)
 
 	return app, captura
 }

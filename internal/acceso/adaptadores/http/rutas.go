@@ -1,6 +1,7 @@
 package http
 
 import (
+	"log/slog"
 	"net/http"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -8,6 +9,9 @@ import (
 	"github.com/gofiber/fiber/v2"
 
 	"github.com/r-david1/moterus/internal/acceso/puertos"
+	confianzahttp "github.com/r-david1/moterus/internal/confianza/adaptadores/http"
+	confianzadominio "github.com/r-david1/moterus/internal/confianza/dominio"
+	confianzapuertos "github.com/r-david1/moterus/internal/confianza/puertos"
 )
 
 // prefijo es el prefijo de ruta de los endpoints de Acceso (§7 del
@@ -21,7 +25,20 @@ const prefijo = "/acceso"
 // MiddlewareAutenticacion consume para las rutas protegidas — el mismo
 // puerto que el resto del sistema usa para autenticar cualquier endpoint
 // no público (§2.4 del diseño).
-func RegistrarRutas(app *fiber.App, m *ManejadorAcceso, validador puertos.ValidadorDeAccesos) huma.API {
+//
+// portero es el confianza/puertos.PorteroDeSala que confianzahttp.
+// MiddlewareSalaDeEspera consume para proteger POST /acceso/sesiones (§12
+// de docs/design/colas-virtuales.md: acceso.iniciar_sesion, alcance
+// sistema). Va PRIMERO en la cadena de esa operación (INV-COLA-09: antes de
+// cualquier trabajo caro — Argon2id, Postgres, la evaluación de Confianza
+// que ya hace Identidad dentro de AutenticarUsuario). cmd/api/main.go pasa
+// el adaptador real (Redis) o confianza/adaptadores/porteronoop si
+// REDIS_URL no está configurada. Puede ir nil ÚNICAMENTE para no romper los
+// tests de integración existentes de este paquete (mismo criterio que
+// identidad/adaptadores/http.RegistrarRutas frente a validador nil): con
+// nil, el endpoint se registra sin el middleware, igual que antes de esta
+// extensión.
+func RegistrarRutas(app *fiber.App, m *ManejadorAcceso, validador puertos.ValidadorDeAccesos, portero confianzapuertos.PorteroDeSala) huma.API {
 	app.Use(middlewareOrigenSolicitud)
 
 	// Rutas de metadatos (OpenAPI/docs/schemas) con prefijo propio: Acceso e
@@ -41,6 +58,8 @@ func RegistrarRutas(app *fiber.App, m *ManejadorAcceso, validador puertos.Valida
 
 	metaPublico := map[string]any{
 		"x-auth-nivel": "publico-sin-token",
+		"x-sala-espera": "ruta protegible acceso.iniciar_sesion, alcance sistema " +
+			"(docs/design/colas-virtuales.md §1.6/§12): MiddlewareSalaDeEspera montado primero en la cadena (INV-COLA-09).",
 	}
 	metaPublicoRefresco := map[string]any{
 		"x-auth-nivel": "publico-token-refresco-en-cuerpo",
@@ -54,7 +73,7 @@ func RegistrarRutas(app *fiber.App, m *ManejadorAcceso, validador puertos.Valida
 		"x-rate-limit": "ADR 0018/0019: EvaluadorConfianza, accion=cierre_masivo_sesiones (5/min por IP, 3/15min por usuario).",
 	}
 
-	huma.Register(api, huma.Operation{
+	opIniciarSesion := huma.Operation{
 		OperationID: "acceso-iniciar-sesion",
 		Method:      http.MethodPost,
 		Path:        prefijo + "/sesiones",
@@ -65,7 +84,14 @@ func RegistrarRutas(app *fiber.App, m *ManejadorAcceso, validador puertos.Valida
 		DefaultStatus: http.StatusCreated,
 		Tags:          []string{"Acceso"},
 		Metadata:      metaPublico,
-	}, m.IniciarSesion)
+	}
+	if portero != nil {
+		opIniciarSesion.Middlewares = huma.Middlewares{confianzahttp.MiddlewareSalaDeEspera(api, portero, confianzadominio.RutaAccesoIniciarSesion)}
+	} else {
+		slog.Warn("acceso/adaptadores/http: RegistrarRutas se llamó sin portero de Confianza — " +
+			"POST /acceso/sesiones queda sin sala de espera. NO USAR EN PRODUCCIÓN.")
+	}
+	huma.Register(api, opIniciarSesion, m.IniciarSesion)
 
 	huma.Register(api, huma.Operation{
 		OperationID: "acceso-completar-segundo-factor",
