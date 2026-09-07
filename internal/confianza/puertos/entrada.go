@@ -27,6 +27,14 @@ type Solicitud struct {
 	// algún consumidor lo necesite; ver ADR 0018, "Alcance no cubierto")
 	// pero el hueco de "no hay una clave real que limitar" ya se cerró.
 	TenantID string
+	// HuellaDispositivo es el valor crudo de la cabecera
+	// X-Device-Fingerprint, tal como lo recibió el borde HTTP del contexto
+	// llamador (§2.1 de fingerprinting-comportamiento.md). Vacío si el
+	// cliente no la envió — y ese vacío es en sí mismo una señal de riesgo
+	// (huella_ausente, §1.4 del diseño), así que NO puede colapsarse con
+	// "no aplica": el caso de uso necesita distinguir "no mandó huella"
+	// de "mandó una huella que hashea al valor vacío".
+	HuellaDispositivo string
 }
 
 // ResultadoIntento informa el desenlace real de la acción evaluada, para
@@ -39,6 +47,24 @@ type ResultadoIntento struct {
 	IPOrigen          string
 	CorreoNormalizado string
 	Exitoso           bool
+
+	// HuellaDispositivo, IDUsuario e IDSolicitud son aditivos para la
+	// extensión de reconocimiento de origen (§2.1 de
+	// fingerprinting-comportamiento.md). Los tres ACL que producen
+	// ResultadoIntento (identidad/acceso/tenencia) ya tienen estos datos —
+	// identidad/puertos.ResultadoIntento ya lleva Origen y UsuarioID; acceso
+	// y tenencia llevan Origen e IDUsuario — y hasta esta extensión los
+	// descartaban al traducir.
+	HuellaDispositivo string
+	// IDUsuario viaja vacío si el intento no resolvió una cuenta (p. ej.
+	// login con un correo inexistente): RegistrarResultado solo promueve un
+	// origen a "conocido" cuando hay una cuenta identificada y el intento
+	// fue exitoso (INV-RIES-05).
+	IDUsuario string
+	// IDSolicitud es el identificador de correlación forense de la petición
+	// original; solo se usa al auditar OrigenNuevoObservado (§1.6 del
+	// diseño), nunca para calcular señales.
+	IDSolicitud string
 }
 
 // EvaluadorDeRiesgo es el puerto de entrada del bounded context Confianza:

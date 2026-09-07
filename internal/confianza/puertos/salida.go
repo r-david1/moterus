@@ -244,3 +244,83 @@ type ConsultaAutorizacionOrganizacion struct {
 //   - NotificadorDeTurno: avisar por push/websocket en vez de sondeo. El
 //     sondeo dictado por el servidor (ResultadoTurno.ReconsultarEn) es el
 //     MVP.
+
+// =============================================================================
+// Reconocimiento de origen (docs/design/fingerprinting-comportamiento.md
+// §2.2). Extensión aditiva sobre el archivo existente: nada de lo de arriba
+// cambia.
+// =============================================================================
+
+// PerfilDeOrigenes es el puerto sobre el índice derivado de orígenes
+// conocidos por cuenta. La implementación real (adaptadores/redis/
+// perfil_origenes.go, fase posterior) es un HASH por cuenta: una lectura de
+// cuatro campos en el camino caliente (HMGET) y un script Lua en el camino
+// de escritura, para que "agregar el origen, podar el excedente y refrescar
+// el TTL" sea atómico — mismo criterio y mismo motivo que scriptPermitir del
+// limitador de tasa (ADR 0018).
+//
+// Este puerto NO es una fuente de verdad: es un índice reconstruible
+// (INV-RIES-08). Perderlo entero no destruye información de negocio, solo
+// apaga temporalmente la señal (toda cuenta vuelve a verse "sin historial
+// suficiente", §1.4, INV-RIES-04) hasta que se reconstruya con los próximos
+// logins exitosos. Cualquier implementación que satisfaga el contrato
+// (incluida una en memoria para tests) es intercambiable sin tocar
+// aplicacion.
+//
+// Un adaptador nil es legítimo y significa "la extensión está apagada" —
+// mismo criterio que el `confianza` nil de ManejadorIdentidad en ADR 0018:
+// sin REDIS_URL, el paso 2.5 de EvaluarTrustSignal se reduce a una
+// comparación de puntero y el reconocimiento de origen queda inerte, sin que
+// el resto del contexto tenga que saberlo.
+//
+// Consultar no sabe qué es una huella de dispositivo ni una IP: recibe los
+// hashes ya calculados por el dominio (dominio.HashHuella,
+// dominio.HashRed). El adaptador Redis no necesita reconstruir ningún value
+// object para hacer un HMGET, por eso ConsultaPerfilOrigen/
+// VistaPerfilOrigen/RegistrarOrigenObservado son primitivos, igual que
+// ProyeccionSala/EstadoTicket más arriba.
+type PerfilDeOrigenes interface {
+	// Consultar responde, en UNA operación de Redis, todo lo que
+	// PerfilDeOrigen necesita para producir sus señales.
+	Consultar(ctx context.Context, q ConsultaPerfilOrigen) (VistaPerfilOrigen, error)
+
+	// Registrar promueve un origen a "conocido". Se invoca EXCLUSIVAMENTE
+	// desde RegistrarResultado con Exitoso=true (INV-RIES-05). Es
+	// idempotente y poda el perfil al techo de la política
+	// (MaximoOrigenesRecordados).
+	Registrar(ctx context.Context, cmd RegistrarOrigenObservado) error
+
+	// Olvidar borra el perfil completo de una cuenta. En el MVP el único
+	// olvido automático es el TTL (VidaPerfil); este método existe para el
+	// subcomando de operaciones y para el futuro gancho de
+	// usuario.anonimizado.
+	Olvidar(ctx context.Context, clave string) error
+}
+
+// ConsultaPerfilOrigen transporta la entrada de PerfilDeOrigenes.Consultar.
+type ConsultaPerfilOrigen struct {
+	Clave      string // dominio.ClaveCuenta.String()
+	HashHuella string // "" si la petición no trae huella
+	HashRed    string // "" si la IP es privada, de loopback o ausente
+}
+
+// VistaPerfilOrigen es lo que PerfilDeOrigenes.Consultar devuelve: los
+// campos crudos que dominio.NuevoPerfilDeOrigen necesita para reconstituir
+// la entidad efímera PerfilDeOrigen.
+type VistaPerfilOrigen struct {
+	Exitos              int64
+	ExitosConHuella     int64
+	DispositivoConocido bool
+	RedConocida         bool
+	OrigenesConocidos   int // para los detalles de auditoría de OrigenNuevoObservado (§1.6 del diseño)
+}
+
+// RegistrarOrigenObservado transporta la entrada de
+// PerfilDeOrigenes.Registrar.
+type RegistrarOrigenObservado struct {
+	Clave                    string
+	HashHuella               string
+	HashRed                  string
+	VidaPerfil               time.Duration
+	MaximoOrigenesRecordados int
+}

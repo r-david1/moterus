@@ -494,3 +494,53 @@ func (m *UnidadDeTrabajo) Ejecutar(ctx context.Context, fn func(ctx context.Cont
 	}
 	return fn(ctx)
 }
+
+// =============================================================================
+// Reconocimiento de origen (docs/design/fingerprinting-comportamiento.md
+// §2.2). Extensión aditiva sobre el archivo existente: nada de lo de arriba
+// cambia.
+// =============================================================================
+
+// --- PerfilDeOrigenes (salida) ------------------------------------------------
+
+// PerfilDeOrigenes es el test double de puertos.PerfilDeOrigenes. Por
+// defecto (FnConsultar sin configurar) Consultar devuelve una
+// VistaPerfilOrigen vacía sin error — perfil vacío, es decir "sin
+// historial", cero señales por INV-RIES-04 — mismo criterio de "sin
+// configurar, comportamiento neutro" que EstadoDeCola más arriba. Registrar
+// y Olvidar, por defecto, no hacen nada y no fallan.
+type PerfilDeOrigenes struct {
+	FnConsultar func(ctx context.Context, q puertos.ConsultaPerfilOrigen) (puertos.VistaPerfilOrigen, error)
+	FnRegistrar func(ctx context.Context, cmd puertos.RegistrarOrigenObservado) error
+	FnOlvidar   func(ctx context.Context, clave string) error
+
+	LlamadasConsultar []puertos.ConsultaPerfilOrigen
+	LlamadasRegistrar []puertos.RegistrarOrigenObservado
+	LlamadasOlvidar   []string
+}
+
+var _ puertos.PerfilDeOrigenes = (*PerfilDeOrigenes)(nil)
+
+func (m *PerfilDeOrigenes) Consultar(ctx context.Context, q puertos.ConsultaPerfilOrigen) (puertos.VistaPerfilOrigen, error) {
+	m.LlamadasConsultar = append(m.LlamadasConsultar, q)
+	if m.FnConsultar != nil {
+		return m.FnConsultar(ctx, q)
+	}
+	return puertos.VistaPerfilOrigen{}, nil
+}
+
+func (m *PerfilDeOrigenes) Registrar(ctx context.Context, cmd puertos.RegistrarOrigenObservado) error {
+	m.LlamadasRegistrar = append(m.LlamadasRegistrar, cmd)
+	if m.FnRegistrar != nil {
+		return m.FnRegistrar(ctx, cmd)
+	}
+	return nil
+}
+
+func (m *PerfilDeOrigenes) Olvidar(ctx context.Context, clave string) error {
+	m.LlamadasOlvidar = append(m.LlamadasOlvidar, clave)
+	if m.FnOlvidar != nil {
+		return m.FnOlvidar(ctx, clave)
+	}
+	return nil
+}
