@@ -216,6 +216,13 @@ Errores posibles:
 `aud` específico: ninguno (no hay tokens todavía). Rate limit especial:
 ninguno implementado (ver nota arriba).
 
+**Puede estar detrás de una sala de espera.** Si un operador abrió una
+cola de acceso virtual sobre esta ruta (`docs/design/colas-virtuales.md`,
+extensión del contexto Confianza — el escenario típico es una apertura
+masiva de inscripciones), una petición sin un ticket admitido recibe
+`503` con `desenlace: ticket_requerido` en vez de llegar al registro — ver
+`internal/confianza/README.md`.
+
 ### `POST /identidad/autenticaciones` — Verificar credenciales
 
 **Importante — leer antes de integrar:** este endpoint **NO emite token ni
@@ -597,4 +604,8 @@ roto hasta que alguien lo ejercite en runtime.
 - README de Acceso (completa el login con el segundo factor —
   `POST /acceso/sesiones/segundo-factor`, el token de step-up, el claim
   `amr` con `"otp"`): `internal/acceso/README.md`
+- Diseño de colas de acceso virtual (extiende Confianza; puede proteger
+  `POST /identidad/usuarios` con una sala de espera):
+  `docs/design/colas-virtuales.md`
+- README de Confianza: `internal/confianza/README.md`
 - Índice completo de ADRs: `docs/adr/README.md`

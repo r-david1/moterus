@@ -186,6 +186,14 @@ ninguno propio de Acceso — Identidad ya evalúa Confianza dentro de
 `AutenticarUsuario` con `Accion="login"`; Acceso no lo vuelve a evaluar
 aquí (evitaría duplicar el consumo de cuota, ver diseño §0).
 
+**Puede estar detrás de una sala de espera.** Si un operador abrió una
+cola de acceso virtual sobre esta ruta (`docs/design/colas-virtuales.md`,
+extensión del contexto Confianza), una petición sin un ticket admitido
+recibe `503` con `desenlace: ticket_requerido` en vez de llegar al login —
+ver `internal/confianza/README.md` para el flujo de ingreso/turno/reclamo.
+Fuera de un evento con sala abierta, este mecanismo es completamente
+transparente: el costo es una lectura de un puntero atómico.
+
 Request:
 
 ```json
@@ -554,4 +562,8 @@ migración y de `Guardar` en
 - ADR 0038 (token de step-up, este contexto): `docs/adr/0038-token-step-up-jwt-propio-ttl-corto.md`
 - ADR 0039 (deshabilitar MFA exige código propio): `docs/adr/0039-deshabilitar-mfa-exige-codigo-propio.md`
 - ADR 0040 (códigos de respaldo generados en la confirmación): `docs/adr/0040-codigos-respaldo-en-confirmacion.md`
+- Diseño de colas de acceso virtual (extiende Confianza; puede proteger
+  `POST /acceso/sesiones` con una sala de espera):
+  `docs/design/colas-virtuales.md`
+- README de Confianza: `internal/confianza/README.md`
 - Índice completo de ADRs: `docs/adr/README.md`

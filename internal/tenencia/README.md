@@ -485,6 +485,13 @@ Rate limit: ADR 0018/§11.3, `aceptar_invitacion` — 10/min por IP (es un
 oráculo de fuerza bruta sobre tokens de invitación, igual que la
 renovación de refresco en Acceso).
 
+**Puede estar detrás de una sala de espera.** Si un operador abrió una
+cola de acceso virtual sobre esta ruta (`docs/design/colas-virtuales.md`,
+extensión del contexto Confianza — el escenario típico es un onboarding
+masivo), una petición sin un ticket admitido recibe `503` con
+`desenlace: ticket_requerido` **antes** de llegar a la autenticación del
+propio endpoint — ver `internal/confianza/README.md`.
+
 Request:
 
 ```json
@@ -587,4 +594,8 @@ práctica, no solo en la teoría del ADR.
 - ADR 0031 (RLS multi-tenant): `docs/adr/0031-rls-multi-tenant-guc-por-transaccion.md`
 - README de Identidad (consumidor de `VerificadorDeAutorizacion`/`ConsultorDeMembresias`): `internal/identidad/README.md`
 - README de Acceso (patrón de namespace OpenAPI que Tenencia replica; puerto `ValidadorDeAccesos` que consume Tenencia): `internal/acceso/README.md`
+- Diseño de colas de acceso virtual (extiende Confianza; puede proteger
+  `POST /tenencia/invitaciones/aceptaciones` con una sala de espera):
+  `docs/design/colas-virtuales.md`
+- README de Confianza: `internal/confianza/README.md`
 - Índice completo de ADRs: `docs/adr/README.md`

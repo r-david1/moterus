@@ -1,10 +1,31 @@
 # Diseño — Colas de acceso virtual (sala de espera): extensión del bounded context **Confianza**
 
-> Estado: **diseño, sin implementar**. Autor: agente `arquitecto-ddd-hexagonal`.
-> Fecha: 2026-09-06.
+> Estado: **implementada**. Autor original: agente `arquitecto-ddd-hexagonal`.
+> Fecha del diseño original: 2026-09-06. Fecha de cierre de implementación y
+> documentación: 2026-09-07.
 > Alcance: extiende **Confianza** con el mecanismo de sala de espera virtual (protección de capacidad **agregada** ante picos de tráfico legítimo). No es un bounded context nuevo — ver §0.1, la primera decisión que este documento tiene que justificar.
-> Depende de: **ADR 0002 (un solo producto — no se reabre)**, ADR 0004 (nombres de tablas), ADR 0005 (auditoría hash-chained), ADR 0006 (Huma v2), ADR 0007 (español en dominio/aplicación/puertos), **ADR 0009 (frontera Identidad/Acceso — no se reabre)**, ADR 0017 (toda tabla nueva necesita `GRANT` explícito), **ADR 0018 (Confianza + Redis — no se reabre; este diseño construye encima)**, ADR 0029/0030 (roles y autorización de Tenencia), ADR 0038 (token de step-up: precedente de token con propósito propio).
+> Depende de: **ADR 0002 (un solo producto — no se reabre)**, ADR 0004 (nombres de tablas), ADR 0005 (auditoría hash-chained), ADR 0006 (Huma v2), ADR 0007 (español en dominio/aplicación/puertos), **ADR 0009 (frontera Identidad/Acceso — no se reabre)**, ADR 0017 (toda tabla nueva necesita `GRANT` explícito), **ADR 0018 (Confianza + Redis — no se reabre; este diseño construye encima)**, ADR 0029/0030 (roles y autorización de Tenencia), ADR 0038 (token de step-up: precedente de token con propósito propio), y las suyas propias, **ADR 0041–0046** (§10).
 > Consumidores: **Acceso** (`POST /acceso/sesiones`), **Identidad** (`POST /identidad/usuarios`), **Tenencia** (`POST /tenencia/invitaciones/aceptaciones`) — los tres, únicamente a través de un middleware HTTP, sin ningún cambio en su dominio ni en su aplicación.
+>
+> **Estado del código hoy: implementado end-to-end** (dominio, puertos,
+> aplicación, migraciones `000017`/`000018`, adaptadores
+> Redis/Postgres/HTTP con Huma v2, ACL hacia Tenencia y Auditoría, y el
+> cableado completo en `cmd/api/main.go`: reconciliador arrancado como
+> goroutine, `MiddlewareSalaDeEspera` montado en las tres rutas del
+> catálogo cerrado — `acceso.iniciar_sesion`, `identidad.registrar_usuario`,
+> `tenencia.aceptar_invitacion` — y portero no-op cuando `REDIS_URL` no está
+> configurado) y **verificado en vivo a mano con `curl` contra un servidor
+> real** (Postgres+Redis reales): abrir una sala → `503` con `desenlace:
+> ticket_requerido` al pegarle a la ruta protegida sin ticket → ingresar y
+> obtener un turno → turno admitido → la misma petición real (login) ahora
+> sí pasa con el ticket admitido → cerrar la sala → la ruta vuelve a su
+> comportamiento normal sin ticket. La referencia **operativa** para
+> integradores es `internal/confianza/README.md` — este documento sigue
+> siendo la referencia normativa de diseño, pero donde discrepe con el
+> código, **el código es la fuente de verdad**; la única discrepancia
+> puntual detectada (el endpoint `GET .../salas-espera` de listado de §7.2
+> no llegó a implementarse) queda anotada en línea en esa misma sección en
+> vez de reescribir el documento entero.
 >
 > **Nombre del archivo**: `colas-virtuales.md` y no `confianza-bounded-context.md`. Es deliberado y sigue el precedente de `otp-mfa.md`: este documento describe una **extensión de feature** sobre un contexto que ya existe y ya tiene código en producción, no la apertura de un contexto. El vocabulario "colas virtuales" es además el que `internal/plataforma/cache/doc.go` viene usando desde el inicio del proyecto; renombrarlo ahora obligaría a corregir un comentario que ya era correcto. Dentro del código y del lenguaje ubicuo, en cambio, el agregado se llama **`SalaDeEspera`** (§1.2): "cola" describe la estructura de datos, "sala de espera" describe el concepto de negocio, y el dominio nombra conceptos, no estructuras.
 
@@ -881,7 +902,19 @@ Registrados con Huma v2 (ADR 0006), prefijo `/confianza`, nombres en español y 
 |---|---|---|---|---|---|
 | `POST` | `/confianza/organizaciones/{idOrganizacion}/salas-espera` | Bearer | `organizacion.editar` (Tenencia) | **201** + `VistaSala` | 401, 403, 404, 409 `ErrSalaYaAbiertaParaLaRuta`/alias, 422 |
 | `PATCH` | `/confianza/organizaciones/{idOrganizacion}/salas-espera/{idSala}` | Bearer | `organizacion.editar` | **200** + `VistaSala` | 401, 403, 404, 409 transición inválida, 422 |
-| `GET` | `/confianza/organizaciones/{idOrganizacion}/salas-espera` | Bearer | `organizacion.ver` | **200** + `[]VistaSala` | 401, 403, 404 |
+| ~~`GET`~~ | ~~`/confianza/organizaciones/{idOrganizacion}/salas-espera`~~ | — | — | — | **no implementado** |
+
+> **Nota de discrepancia diseño vs. implementación**: el endpoint de
+> listado (`GET .../salas-espera`, permiso `organizacion.ver`) planeado
+> arriba **no está registrado** en
+> `internal/confianza/adaptadores/http/rutas.go` — solo se implementaron
+> los dos verbos de mutación (`POST`/`PATCH`). Además, `PATCH` no separa
+> "cambiar ritmo" de "cambiar estado" en dos rutas: un único endpoint
+> despacha a `CambiarRitmo`/`CambiarEstado` según qué campo del cuerpo
+> venga presente (`ActualizarSala` en `handlers.go`), con al menos uno
+> obligatorio. El código es la fuente de verdad; si tu integración
+> necesita listar las salas de una organización, ese endpoint no existe
+> todavía — ver `internal/confianza/README.md`.
 
 Tres cosas a fijar:
 
