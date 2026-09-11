@@ -4,10 +4,19 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/r-david1/moterus/internal/confianza/dominio"
 	"github.com/r-david1/moterus/internal/confianza/puertos"
 )
+
+// reintentarEnCaptchaPorRiesgo es el Retry-After que acompaña un 429
+// riesgo_de_origen_requiere_captcha (§1/§10 del diseño
+// fingerprinting-comportamiento.md): no es un cooldown real (resolver un
+// captcha es inmediato), solo el margen para que el cliente cargue el
+// widget — mismo valor que retryTicketRequeridoSegundos en las colas de
+// acceso virtual.
+const reintentarEnCaptchaPorRiesgo = 5 * time.Second
 
 // EvaluarTrustSignalCasoDeUso implementa puertos.EvaluadorDeRiesgo: dos
 // niveles de rate limiting simultáneos (IP y cuenta, ADR 0018) más
@@ -303,6 +312,20 @@ func (c *EvaluarTrustSignalCasoDeUso) evaluarRiesgoDeOrigen(ctx context.Context,
 				Permitido:       false,
 				RequiereCaptcha: true,
 				Motivo:          "riesgo_de_origen_requiere_captcha",
+				// ReintentarEn no representa un cooldown que haya que
+				// esperar (a diferencia de limite_ip_excedido/
+				// limite_cuenta_excedido_*, que sí tienen una ventana
+				// real): resolver un captcha es inmediato. Se fija un valor
+				// corto igual — mismo criterio que
+				// retryTicketRequeridoSegundos en las colas de acceso
+				// virtual (5s: alcanza para que el cliente cargue el
+				// widget) — porque §1/§10 del diseño describe este 429
+				// reutilizando la MISMA forma de cuerpo que
+				// ErrAccesoDenegadoPorConfianza, "con su Retry-After"; sin
+				// este campo, mapearErrorDominio (que solo agrega la
+				// cabecera si ReintentarEn > 0) lo omitía, dejando el 429
+				// sin Retry-After pese a que el diseño lo pedía.
+				ReintentarEn:    reintentarEnCaptchaPorRiesgo,
 				Puntaje:         puntajeCaptcha,
 				PuntajeRiesgo:   riesgo,
 				NivelRiesgo:     nivel,
