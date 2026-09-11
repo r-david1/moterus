@@ -120,6 +120,16 @@ fail-open (dev) automáticamente, sin necesidad de una cuenta de Cloudflare.
 Ver `docs/adr/0018-rate-limiting-captcha-confianza-redis.md` para los
 umbrales exactos y la verificación manual contra el servidor real.
 
+Con `REDIS_URL` configurado, el mismo login también alimenta el
+**reconocimiento de origen** (tercera extensión de Confianza,
+`docs/design/fingerprinting-comportamiento.md`): el ACL de Identidad hacia
+Confianza (`identidad/adaptadores/confianza/evaluador_confianza_real.go`)
+puebla `HuellaDispositivo`, `IDUsuario` e `IDSolicitud` en cada evaluación
+y registro de `POST /identidad/autenticaciones`. Por defecto opera en modo
+`observar` (INV-RIES-14): no cambia el desenlace de ningún login, solo
+audita `origen.nuevo` la primera vez que una cuenta con historial
+autentica desde un dispositivo nuevo.
+
 Health check de infraestructura (no es un endpoint de negocio de ningún
 contexto): `GET /health`.
 

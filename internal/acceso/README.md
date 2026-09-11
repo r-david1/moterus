@@ -25,7 +25,12 @@ Acceso **no** hace (y por diseño no debe hacerse aquí):
   contexto **Tenencia**, que todavía no existe en este repositorio.
 - Rate limiting, captcha, score de riesgo — contexto **Confianza**. Acceso
   sí lo evalúa en `renovación` y `cierre masivo`, no en el login (ya lo
-  hace Identidad ahí; ver `docs/design/acceso-bounded-context.md` §0).
+  hace Identidad ahí; ver `docs/design/acceso-bounded-context.md` §0). Su
+  ACL hacia Confianza (`acceso/adaptadores/confianza/evaluador_confianza.go`)
+  puebla los mismos campos aditivos de reconocimiento de origen
+  (`HuellaDispositivo`, `IDUsuario`, `IDSolicitud`) que Identidad, aunque
+  ese mecanismo solo evalúa señales en `login` (INV-RIES-15) — ver
+  `docs/design/fingerprinting-comportamiento.md`.
 - Persistir la bitácora forense — contexto **Auditoría** (mismo mecanismo
   ya construido para Identidad: tabla `auditoria`, hash-chaining, ADR
   0005), consumido vía el puerto `RegistroAuditoria`.

@@ -67,6 +67,7 @@ romper INV-ACC-12 (el JWT no lleva `roles`/`org_id`).
 | Identidad | `puertos.ConsultorDeUsuarios.ObtenerPorID` | ACL `tenencia/adaptadores/identidad/` (`VerificadorDeSujetos`) | Validar que un `usuario_id` existe y está `activo` antes de crear una membresía (INV-TEN-07); obtener el correo verificado de quien acepta una invitación (INV-TEN-21) |
 | Acceso | `puertos.ValidadorDeAccesos` | middleware HTTP propio de Tenencia | Autenticar la petición y obtener el `sub` |
 | Confianza | evaluador de riesgo | ACL `tenencia/adaptadores/confianza/` | Acotar creación de organizaciones, invitaciones y redenciones |
+| Confianza (reconocimiento de origen) | evaluador de riesgo | mismo ACL `tenencia/adaptadores/confianza/` | El ACL puebla `HuellaDispositivo`/`IDUsuario`/`IDSolicitud` como los otros dos contextos, pero el mecanismo solo evalúa señales en `login` (INV-RIES-15): en Tenencia esos campos viajan sin efecto — ver `docs/design/fingerprinting-comportamiento.md` |
 | Auditoría | registro forense | ACL `tenencia/adaptadores/auditoria/` | Bitácora, con `organizacion_id` poblado |
 
 ## Cómo levantarlo en local

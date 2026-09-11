@@ -1,10 +1,35 @@
 # Diseño — Reconocimiento de origen y señales de riesgo (device fingerprinting + comportamiento): tercera extensión del bounded context **Confianza**
 
-> Estado: **diseño, sin implementar**. Autor: agente `arquitecto-ddd-hexagonal`.
-> Fecha: 2026-09-07.
+> Estado: **implementada**. Autor original: agente `arquitecto-ddd-hexagonal`.
+> Fecha del diseño original: 2026-09-07. Fecha de cierre de implementación y
+> documentación: 2026-09-07.
 > Alcance: extiende **Confianza** con la capacidad de responder *"¿este intento viene de un origen que esta cuenta ya usó antes?"* y convertir esa respuesta en fricción graduada. **No es un bounded context nuevo** — ver §0.1, la primera decisión que este documento tiene que justificar, con el mismo criterio que ADR 0041.
 > Depende de: **ADR 0002 (un solo producto/proceso — no se reabre)**, ADR 0004 (nombres de tablas), **ADR 0005 (auditoría hash-chained — este diseño se apoya en que `auditoria.huella_dispositivo` ya existe)**, ADR 0007 (español en dominio/aplicación/puertos), **ADR 0009 (Identidad autentica, no bloquea por razones ajenas a la credencial — no se reabre)**, ADR 0017 (privilegios explícitos), **ADR 0018 (Confianza + Redis, rate limiting/captcha — no se reabre; este diseño construye encima y reutiliza su `Decision`)**, ADR 0037/0038/0039 (MFA y token de step-up — determinan lo que este diseño **no** puede hacer, §3.2), **ADR 0041 (criterio "extender antes que crear")**, ADR 0044 (precedente de modo degradado), y las suyas propias, **ADR 0047–0051** (§9).
 > Consumidores: **Identidad** (`POST /identidad/autenticaciones`, vía el ACL `identidad/adaptadores/confianza` que ya existe). Ningún otro contexto cambia. Ningún endpoint HTTP nuevo.
+>
+> **Estado del código hoy: implementado end-to-end** (dominio —
+> `ClaveCuenta`/`HashHuella`/`HashRed`/`HuellaDeOrigen`/`SenalRiesgo`/
+> `PuntajeRiesgo`/`NivelRiesgo`/`PerfilDeOrigen`/`PoliticaRiesgo`, todo puro
+> y probado sin Redis—, puertos aditivos (§2), aplicación —paso 2.5 y
+> promoción dentro de `EvaluarTrustSignalCasoDeUso`, más el caso de uso
+> nuevo `OlvidarPerfilDeOrigen`—, migración `000019` del catálogo de
+> auditoría, adaptador Redis (`HMGET` + script Lua `registrar`), ACL hacia
+> Auditoría (`case OrigenNuevoObservado`), y los tres ACL hacia
+> Identidad/Acceso/Tenencia poblando `HuellaDispositivo`/`IDUsuario`/
+> `IDSolicitud` sin mapear nunca `PuntajeRiesgo`/`NivelRiesgo`/
+> `SenalesDeRiesgo` — hacia afuera, INV-RIES-09) y el cableado completo en
+> `cmd/api/main.go` (`construirEvaluadorDeRiesgo`: `PerfilDeOrigenes` sobre
+> el mismo cliente Redis compartido cuando `REDIS_URL` está configurado,
+> `nil` con `WARN` explícito si no) y **verificado en vivo con
+> `go run ./cmd/api` real** (Postgres+Redis reales): el proceso arranca y
+> loguea `"reconocimiento de origen activo (modo observar por defecto —
+> no cambia el desenlace de ningún login, solo lo audita/loguea)"`, y una
+> prueba manual de registro seguido de múltiples logins confirmó una fila
+> de auditoría real `origen.nuevo` en Postgres, encadenada con el resto de
+> la bitácora. La referencia **operativa** para integradores es
+> `internal/confianza/README.md` — este documento sigue siendo la
+> referencia normativa de diseño, pero donde discrepe con el código, **el
+> código es la fuente de verdad**.
 >
 > **Nombre del archivo**: `fingerprinting-comportamiento.md`, para que coincida con la ficha del agente homónimo y con el vocabulario del encargo original. Dentro del código, en cambio, el concepto **no** se llama "fingerprinting" ni "comportamiento": se llama **reconocimiento de origen** (`PerfilDeOrigen`, `HuellaDeOrigen`, `SenalRiesgo`), por dos motivos. Primero, ADR 0007 (español en dominio/aplicación/puertos). Segundo y más importante: "análisis de comportamiento" describe una ambición que el MVP de este documento **no cumple** y no debería fingir que cumple (§0.3). Mismo precedente que `colas-virtuales.md`, cuyo agregado se llama `SalaDeEspera` y no `Cola`.
 >
