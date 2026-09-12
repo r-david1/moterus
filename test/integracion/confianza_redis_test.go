@@ -117,6 +117,77 @@ func TestLimitadorTasaRedis_backoffExponencialCrecienteAlSeguirExcediendo(t *tes
 	}
 }
 
+// TestLimitadorTasaRedis_INV_BLQ_05_BackoffMaximoAcotaElEscaladoCuandoElUmbralLoFija
+// verifica el fix de ADR 0052 contra Redis real: cuando el Umbral fija
+// BackoffMaximo (el caso real de PoliticaLimites.Para() para el nivel
+// Cuenta, que lo normaliza siempre a su propia Ventana — ver
+// internal/confianza/dominio/umbral.go), 9 peticiones consecutivas sobre
+// la misma clave NUNCA extienden el TTL más allá de esa ventana nominal
+// — a diferencia del comportamiento sin BackoffMaximo fijado (el caso
+// real del nivel IP), donde el mismo patrón de tráfico escala
+// exponencialmente. Es el test que demuestra que el escenario de "9
+// peticiones HTTP bastan para dejar una cuenta ajena en cooldown de 2
+// horas" (docs/adr/0052-cooldown-exponencial-solo-en-clave-propia.md)
+// ya no es posible.
+func TestLimitadorTasaRedis_INV_BLQ_05_BackoffMaximoAcotaElEscaladoCuandoElUmbralLoFija(t *testing.T) {
+	url := os.Getenv("REDIS_URL")
+	if url == "" {
+		t.Skip("REDIS_URL no está definido")
+	}
+	cliente, err := cache.NuevoClienteRedis(url)
+	if err != nil {
+		t.Fatalf("no se pudo construir el cliente Redis: %v", err)
+	}
+	t.Cleanup(func() { _ = cliente.Close() })
+	// backoffMaximo del ADAPTADOR se deja alto (nunca acotarlo desde
+	// afuera): lo único que debe limitar el escalado de la clave de
+	// "cuenta" es umbral.BackoffMaximo, no una opción de test.
+	limitador := redis.NuevoLimitadorTasa(cliente)
+	ctx := context.Background()
+
+	ventana := 200 * time.Millisecond
+	limiteCuenta := 5
+
+	t.Run("clave de cuenta: BackoffMaximo=Ventana nunca escala más allá de la ventana", func(t *testing.T) {
+		claveCuenta := claveUnicaDePrueba(t, "blq05-cuenta")
+		t.Cleanup(func() { _ = limitador.Reiniciar(ctx, claveCuenta) })
+		umbralCuenta := dominio.Umbral{Limite: limiteCuenta, Ventana: ventana, BackoffMaximo: ventana}
+
+		var ultimoTTL time.Duration
+		for i := 1; i <= 9; i++ {
+			_, _, ttl, err := limitador.Permitir(ctx, claveCuenta, umbralCuenta)
+			if err != nil {
+				t.Fatalf("intento %d: error inesperado: %v", i, err)
+			}
+			if ttl > ventana {
+				t.Fatalf("intento %d: TTL = %v, no debe superar nunca la ventana nominal (%v) — INV-BLQ-05 violada", i, ttl, ventana)
+			}
+			ultimoTTL = ttl
+		}
+		if ultimoTTL <= 0 {
+			t.Fatalf("tras 9 intentos por encima del límite, el TTL debía seguir siendo > 0 (clave todavía en cooldown), fue %v", ultimoTTL)
+		}
+	})
+
+	t.Run("clave de IP (contraste): sin BackoffMaximo fijado, sí escala más allá de la ventana", func(t *testing.T) {
+		claveIP := claveUnicaDePrueba(t, "blq05-ip")
+		t.Cleanup(func() { _ = limitador.Reiniciar(ctx, claveIP) })
+		umbralIP := dominio.Umbral{Limite: limiteCuenta, Ventana: ventana} // BackoffMaximo=0
+
+		var ultimoTTL time.Duration
+		for i := 1; i <= 9; i++ {
+			_, _, ttl, err := limitador.Permitir(ctx, claveIP, umbralIP)
+			if err != nil {
+				t.Fatalf("intento %d: error inesperado: %v", i, err)
+			}
+			ultimoTTL = ttl
+		}
+		if ultimoTTL <= ventana {
+			t.Fatalf("sin BackoffMaximo fijado, el TTL tras 9 intentos debía superar la ventana nominal (%v) por el escalado exponencial, fue %v", ventana, ultimoTTL)
+		}
+	})
+}
+
 // claveUnicaDePrueba evita colisiones entre corridas del test suite contra
 // el mismo Redis compartido de desarrollo.
 func claveUnicaDePrueba(t *testing.T, sufijo string) string {

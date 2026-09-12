@@ -117,14 +117,26 @@ func NuevoLimitadorTasa(cliente *goredis.Client, opciones ...OpcionLimitadorTasa
 }
 
 // Permitir ver el comentario de scriptPermitir.
+//
+// El tope de backoff que se pasa al script (ARGV[3]) sale de
+// umbral.BackoffMaximo cuando el llamador lo fijó (> 0) — es el caso del
+// nivel Cuenta, que PoliticaLimites.Para() normaliza siempre a su propia
+// Ventana (ADR 0052, INV-BLQ-05: el escalado nunca debe crecer en una
+// clave que el atacante no posee) — y de l.backoffMaximo (el tope del
+// adaptador, 2h por defecto) en caso contrario, que es el caso del nivel
+// IP, donde el escalado sí está bien dirigido.
 func (l *LimitadorTasa) Permitir(ctx context.Context, clave string, umbral dominio.Umbral) (bool, int, time.Duration, error) {
 	if umbral.Limite <= 0 {
 		return false, 0, 0, fmt.Errorf("confianza/redis: umbral.Limite debe ser > 0, fue %d", umbral.Limite)
 	}
+	backoffMaximo := l.backoffMaximo
+	if umbral.BackoffMaximo > 0 {
+		backoffMaximo = umbral.BackoffMaximo
+	}
 	res, err := l.script.Run(ctx, l.cliente, []string{clave},
 		umbral.Limite,
 		umbral.Ventana.Milliseconds(),
-		l.backoffMaximo.Milliseconds(),
+		backoffMaximo.Milliseconds(),
 	).Result()
 	if err != nil {
 		return false, 0, 0, fmt.Errorf("confianza/redis: fallo al evaluar el limitador de tasa: %w", err)

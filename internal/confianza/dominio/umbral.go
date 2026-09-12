@@ -9,6 +9,21 @@ import "time"
 type Umbral struct {
 	Limite  int
 	Ventana time.Duration
+
+	// BackoffMaximo acota cuánto puede crecer el cooldown exponencial de
+	// esta clave cuando sigue recibiendo solicitudes pese a estar
+	// bloqueada (ADR 0052, INV-BLQ-05). Cero usa el tope por defecto del
+	// adaptador (2h, backoffMaximoPorDefecto en
+	// confianza/adaptadores/redis/limitador_tasa.go), que es lo correcto
+	// para el nivel IP: ahí quien posee la clave es quien provoca el
+	// escalado, así que el castigo está bien dirigido. Para el nivel
+	// Cuenta, LimitesPorAccion.Para() lo normaliza SIEMPRE a Ventana (sin
+	// escalar): la clave de cuenta la posee la potencial víctima, no el
+	// atacante, así que un escalado ahí castigaría a quien no hizo nada.
+	// Sin este campo, 9 peticiones HTTP contra una cuenta ajena bastaban
+	// para dejarla en cooldown de 2 horas sin ninguna credencial — ver
+	// docs/adr/0052-cooldown-exponencial-solo-en-clave-propia.md.
+	BackoffMaximo time.Duration
 }
 
 // LimitesPorAccion agrupa los dos niveles simultáneos de rate limiting que
@@ -138,12 +153,22 @@ func PoliticaLimitesPorDefecto() PoliticaLimites {
 // — fail-safe: una acción nueva que alguien olvide registrar aquí queda
 // protegida igual, aunque con un umbral genérico, no invisible por
 // completo.
+//
+// Antes de devolver el resultado, normaliza estructuralmente
+// limites.Cuenta.BackoffMaximo = limites.Cuenta.Ventana (ADR 0052,
+// INV-BLQ-05): es imposible obtener de este método un umbral de cuenta
+// con escalado exponencial, incluso desde la rama fail-safe de una acción
+// que alguien olvide registrar en la tabla — la garantía vive en el único
+// punto por el que pasa toda lectura de la política, no en que cada
+// entrada de PoliticaLimitesPorDefecto la fije a mano.
 func (p PoliticaLimites) Para(accion Accion) LimitesPorAccion {
-	if limites, ok := p[accion]; ok {
-		return limites
+	limites, ok := p[accion]
+	if !ok {
+		limites = LimitesPorAccion{
+			IP:     Umbral{Limite: 3, Ventana: time.Minute},
+			Cuenta: Umbral{Limite: 3, Ventana: 15 * time.Minute},
+		}
 	}
-	return LimitesPorAccion{
-		IP:     Umbral{Limite: 3, Ventana: time.Minute},
-		Cuenta: Umbral{Limite: 3, Ventana: 15 * time.Minute},
-	}
+	limites.Cuenta.BackoffMaximo = limites.Cuenta.Ventana
+	return limites
 }
