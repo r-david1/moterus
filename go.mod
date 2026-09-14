@@ -1,6 +1,6 @@
 module github.com/r-david1/moterus
 
-go 1.26.1
+go 1.26.6
 
 require (
 	github.com/danielgtaylor/huma/v2 v2.39.1

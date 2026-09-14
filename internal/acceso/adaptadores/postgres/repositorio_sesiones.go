@@ -83,7 +83,7 @@ func (r *RepositorioSesiones) Guardar(ctx context.Context, s *dominio.Sesion) er
 	_, err = q.ActualizarSesion(ctx, sqlc.ActualizarSesionParams{
 		ID:                  idPg,
 		Estado:              s.Estado().String(),
-		Generacion:          int32(s.Generacion()),
+		Generacion:          int32(s.Generacion()), //nolint:gosec // incrementa una vez por rotación de refresco; con PoliticaSesion (vida máxima 90 días, rotación cada ~10 min) nunca se acerca al límite de int32.
 		ActualizadaEn:       tiempoAPg(s.ActualizadaEn()),
 		UltimaRenovacionEn:  tiempoOpcionalAPg(ultimaRenovacionEn),
 		ExpiraInactividadEn: tiempoAPg(s.ExpiraInactividadEn()),
@@ -103,7 +103,7 @@ func (r *RepositorioSesiones) Guardar(ctx context.Context, s *dominio.Sesion) er
 			ID:                  idPg,
 			UsuarioID:           usuarioIDPg,
 			Estado:              s.Estado().String(),
-			Generacion:          int32(s.Generacion()),
+			Generacion:          int32(s.Generacion()), //nolint:gosec // ver justificación en ActualizarSesion, arriba en este archivo.
 			CreadaEn:            tiempoAPg(s.CreadaEn()),
 			ExpiraInactividadEn: tiempoAPg(s.ExpiraInactividadEn()),
 			ExpiraAbsolutoEn:    tiempoAPg(s.ExpiraAbsolutoEn()),
@@ -140,7 +140,7 @@ func (r *RepositorioSesiones) Guardar(ctx context.Context, s *dominio.Sesion) er
 		if err := q.CrearTokenRefresco(ctx, sqlc.CrearTokenRefrescoParams{
 			HashToken:  vigente.Hash().Valor(),
 			SesionID:   idPg,
-			Generacion: int32(vigente.Generacion()),
+			Generacion: int32(vigente.Generacion()), //nolint:gosec // ver justificación en ActualizarSesion, arriba en este archivo.
 			EmitidoEn:  tiempoAPg(vigente.EmitidoEn()),
 			ExpiraEn:   tiempoAPg(vigente.ExpiraEn()),
 		}); err != nil {

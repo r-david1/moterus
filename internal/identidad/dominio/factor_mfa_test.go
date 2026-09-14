@@ -38,7 +38,7 @@ func codigoValidoParaSecreto(t *testing.T, secreto string, ahora time.Time) Codi
 	if err != nil {
 		t.Fatalf("no se pudo decodificar el secreto: %v", err)
 	}
-	contador := uint64(ahora.Unix() / pasoTOTPSegundos)
+	contador := uint64(ahora.Unix() / pasoTOTPSegundos) //nolint:gosec // instante de prueba siempre posterior a 1970; nunca negativo.
 	codigo, err := NuevoCodigoTOTP(generarCodigoTOTP(clave, contador))
 	if err != nil {
 		t.Fatalf("no se pudo construir el código de control: %v", err)

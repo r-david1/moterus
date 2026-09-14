@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: Build, vet y tests (Postgres + Redis reales)
+    runs-on: ubuntu-latest
+
+    # Mismas imágenes y credenciales de desarrollo que
+    # deployments/docker-compose.yml — el rol de aplicación
+    # (rol_login_identidad) lo crea la migración 000003 con la misma
+    # contraseña fija de desarrollo, así que no hace falta ningún secreto
+    # para este job.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: auth_service
+          POSTGRES_PASSWORD: auth_service_dev_password
+          POSTGRES_DB: auth_service
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U auth_service -d auth_service"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://auth_service:auth_service_dev_password@localhost:5432/auth_service?sslmode=disable
+      DATABASE_URL_APLICACION: postgres://rol_login_identidad:identidad_app_dev_password@localhost:5432/auth_service?sslmode=disable
+      REDIS_URL: redis://localhost:6379/0
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt (sin diferencias pendientes)
+        run: |
+          faltantes="$(gofmt -l .)"
+          if [ -n "$faltantes" ]; then
+            echo "Archivos sin formatear con gofmt:"
+            echo "$faltantes"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        run: go build ./...
+
+      - name: Migraciones (rol dueño, crea también rol_login_identidad — ADR 0017)
+        run: go run ./cmd/migrador up
+
+      - name: go test ./... (unitarios + integración contra Postgres/Redis reales)
+        run: go test ./... -count=1 -v
+
+  security:
+    name: Escaneo de seguridad (govulncheck + gosec)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Instalar herramientas
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+
+      - name: govulncheck (vulnerabilidades conocidas, stdlib y dependencias)
+        run: govulncheck ./...
+
+      - name: golangci-lint / gosec (patrones inseguros en el propio código)
+        # Solo el linter gosec está habilitado — ver .golangci.yml. Se eligió
+        # golangci-lint sobre el binario gosec suelto porque respeta los
+        # comentarios //nolint:gosec ya usados en el código (sha1 de
+        # TOTP/HIBP, conversiones de contador acotadas), que gosec standalone
+        # no entiende (solo su propia sintaxis // #nosec).
+        run: golangci-lint run ./...

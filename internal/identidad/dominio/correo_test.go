@@ -140,7 +140,7 @@ func TestCorreo_String(t *testing.T) {
 // con acento combinante) normalicen al mismo valor — INV-ID-02 depende de
 // esto para que la unicidad no se pueda burlar cambiando la codificación.
 func TestNuevoCorreo_NFC_FormasEquivalentesConvergen(t *testing.T) {
-	precompuesta := "josé@dominio.com"   // "é" como un solo code point (U+00E9)
+	precompuesta := "josé@dominio.com"  // "é" como un solo code point (U+00E9)
 	descompuesta := "josé@dominio.com" // "e" + acento combinante (U+0301)
 
 	if precompuesta == descompuesta {

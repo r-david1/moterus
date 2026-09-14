@@ -233,7 +233,7 @@ func TestVerificarCodigo_ToleranciaUnPasoEnAmbosSentidos(t *testing.T) {
 	// Redondear al inicio exacto de un paso de 30s para tener control fino.
 	base = time.Unix((base.Unix()/pasoTOTPSegundos)*pasoTOTPSegundos, 0).UTC()
 
-	codigoActual := generarCodigoTOTP(decodificarSecretoBase32Test(t, secreto), uint64(base.Unix()/pasoTOTPSegundos))
+	codigoActual := generarCodigoTOTP(decodificarSecretoBase32Test(t, secreto), uint64(base.Unix()/pasoTOTPSegundos)) //nolint:gosec // instante de prueba siempre posterior a 1970; nunca negativo.
 	codigo, err := NuevoCodigoTOTP(codigoActual)
 	if err != nil {
 		t.Fatalf("no se esperaba error: %v", err)
@@ -271,7 +271,7 @@ func TestVerificarCodigo_CodigoIncorrectoFalla(t *testing.T) {
 	// Es extremadamente improbable (1 en un millón) que "000000" coincida
 	// por azar; si el generador cambia y esto empieza a fallar de forma
 	// intermitente, hay que fijar el instante para que nunca coincida.
-	esperado := generarCodigoTOTP(decodificarSecretoBase32Test(t, secreto), uint64(ahora.Unix()/pasoTOTPSegundos))
+	esperado := generarCodigoTOTP(decodificarSecretoBase32Test(t, secreto), uint64(ahora.Unix()/pasoTOTPSegundos)) //nolint:gosec // instante de prueba siempre posterior a 1970; nunca negativo.
 	if esperado == "000000" {
 		t.Skip("colisión improbable con el código de control, no representativa")
 	}

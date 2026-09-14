@@ -261,7 +261,7 @@ func nuevoServidorTenencia(t *testing.T, pool *pgxpool.Pool) (*fiber.App, *captu
 // criterio que correoUnico.
 func aliasUnico(t *testing.T, prefijo string) string {
 	t.Helper()
-	return fmt.Sprintf("%s-%d-%d", prefijo, time.Now().UnixNano(), rand.Intn(1_000_000))
+	return fmt.Sprintf("%s-%d-%d", prefijo, time.Now().UnixNano(), rand.Intn(1_000_000)) //nolint:gosec // sufijo de unicidad de datos de prueba, no un secreto ni una decisión de seguridad.
 }
 
 // crearOrganizacionDePrueba crea una organización vía HTTP con el token de

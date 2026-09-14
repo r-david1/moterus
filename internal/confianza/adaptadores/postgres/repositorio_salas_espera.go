@@ -83,9 +83,9 @@ func (r *RepositorioSalasDeEspera) Guardar(ctx context.Context, s *dominio.SalaD
 		AlcanceOrganizacionID: organizacionIDPg,
 		RutaProtegida:         s.Ruta().String(),
 		Estado:                s.Estado().String(),
-		RitmoAdmision:         int32(s.Politica().RitmoAdmision().PorSegundo()),
+		RitmoAdmision:         int32(s.Politica().RitmoAdmision().PorSegundo()), //nolint:gosec // ritmo de admisión de una sala, config en admisiones/segundo, muy por debajo del rango de int32.
 		CapacidadMaximaCola:   s.Politica().CapacidadMaximaCola(),
-		VentanaReclamoMs:      int32(s.Politica().VentanaReclamo().Milliseconds()),
+		VentanaReclamoMs:      int32(s.Politica().VentanaReclamo().Milliseconds()), //nolint:gosec // ventana de reclamo de un ticket de cola: config acotada a minutos, muy por debajo del rango de int32 (~24.8 días en ms).
 		ModoDegradado:         s.Politica().ModoDegradado().String(),
 		CursorBase:            s.CursorBase(),
 		RelojDesde:            tiempoAPg(s.RelojDesde()),

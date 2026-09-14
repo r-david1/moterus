@@ -1,0 +1,28 @@
+version: "2"
+
+# Alcance deliberadamente mínimo: solo gosec (patrones inseguros en Go),
+# no un lint de estilo. golangci-lint se eligió sobre el binario gosec
+# suelto porque respeta los comentarios `//nolint:gosec` que ya existen
+# en el código (crypto/sha1 en TOTP/HIBP, justificados en el propio
+# comentario) — gosec standalone no entiende esa sintaxis, solo `#nosec`.
+linters:
+  default: none
+  enable:
+    - gosec
+  settings:
+    gosec:
+      excludes:
+        # G101 (posibles credenciales hardcodeadas): falso positivo
+        # sistemático sobre nombres de constante que contienen palabras
+        # como "token"/"credencial" (motivos de error, nombres de
+        # recurso de auditoría, SQL generado por sqlc) sin ningún
+        # secreto real en el valor. Confianza LOW en el propio reporte
+        # de gosec.
+        - G101
+        # G706 (log injection vía taint analysis) en los dos únicos
+        # `log.Fatalf` de los comandos CLI (`migrador`,
+        # `verificador-auditoria`) que interpolan un argumento de línea
+        # de comandos ya validado por el propio proceso: no hay
+        # atacante remoto que controle os.Args de un binario que uno
+        # mismo invoca en su terminal.
+        - G706

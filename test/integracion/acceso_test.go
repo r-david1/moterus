@@ -674,7 +674,7 @@ func totpCodigoDePrueba(t *testing.T, secretoBase32 string, momento time.Time) s
 	if err != nil {
 		t.Fatalf("decodificando el secreto TOTP base32: %v", err)
 	}
-	contador := uint64(momento.Unix() / 30)
+	contador := uint64(momento.Unix() / 30) //nolint:gosec // instante de prueba siempre posterior a 1970; nunca negativo.
 	var contadorBytes [8]byte
 	binary.BigEndian.PutUint64(contadorBytes[:], contador)
 

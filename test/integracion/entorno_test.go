@@ -293,7 +293,7 @@ const contrasenaFuerteDePrueba = "Integr4cion-Segura-Prueba!"
 // ejecuciones anteriores (INV-ID-02: el correo es único a nivel de BD).
 func correoUnico(t *testing.T, prefijo string) string {
 	t.Helper()
-	return fmt.Sprintf("qa-%s-%d-%d@ejemplo-integracion.test", prefijo, time.Now().UnixNano(), rand.Intn(1_000_000))
+	return fmt.Sprintf("qa-%s-%d-%d@ejemplo-integracion.test", prefijo, time.Now().UnixNano(), rand.Intn(1_000_000)) //nolint:gosec // sufijo de unicidad de datos de prueba, no un secreto ni una decisión de seguridad.
 }
 
 // borrarUsuario elimina físicamente (solo el rol dueño puede: rol_aplicacion
