@@ -25,8 +25,8 @@ type IniciarSesionInput struct {
 
 // resultadoSesionRespuesta es la proyección 1:1 de puertos.ResultadoSesion
 // (§2.1 del diseño), común a login y renovación. TokenRefresco viaja en el
-// cuerpo JSON (transporte por cookie es ADR candidato 0021, sin resolver
-// — ver el informe de la tarea): el caller lo recibe UNA vez y lo olvida.
+// cuerpo JSON, nunca en cookie (ADR 0021): el caller lo recibe UNA vez y
+// lo olvida.
 type resultadoSesionRespuesta struct {
 	TokenAcceso      string    `json:"token_acceso"`
 	TipoToken        string    `json:"tipo_token" example:"Bearer"`

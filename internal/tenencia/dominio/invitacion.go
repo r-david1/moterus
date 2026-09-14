@@ -4,7 +4,7 @@ import "time"
 
 // Invitacion es el agregado raíz del contexto Tenencia que representa una
 // invitación por correo a unirse a una Organizacion con un Rol propuesto.
-// Ciclo de vida corto, con token opaco de un solo uso (ADR candidato 0033).
+// Ciclo de vida corto, con token opaco de un solo uso (ADR 0033).
 // Toda mutación ocurre por un método de negocio; no hay campos exportados
 // ni setters, y los getters devuelven copias de valores, nunca punteros
 // internos (INV-TEN-11).

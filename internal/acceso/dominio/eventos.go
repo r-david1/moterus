@@ -5,7 +5,7 @@ import "time"
 // EventoDominio es el contrato que implementan los eventos que el contexto
 // Acceso audita y publica. Mismo contrato que identidad/dominio.EventoDominio
 // (NombreEvento, OcurridoEn, IDAgregado), redeclarado aquí a propósito
-// (§1.7 del diseño; ADR candidato 0027): acceso/dominio no puede importar
+// (§1.7 del diseño; ADR 0027): acceso/dominio no puede importar
 // identidad/dominio (INV-ACC-18).
 //
 // A diferencia de Usuario en identidad/dominio, no todos estos eventos los

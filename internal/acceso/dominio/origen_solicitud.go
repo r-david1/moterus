@@ -11,7 +11,7 @@ const longitudMaximaAgenteUsuario = 512
 
 // DireccionIP es el value object que envuelve una dirección IPv4 o IPv6 ya
 // validada. Tipo propio de acceso/dominio, duplicado a propósito del
-// homónimo de identidad/dominio (§1.7 del diseño; ADR candidato 0027).
+// homónimo de identidad/dominio (§1.7 del diseño; ADR 0027).
 type DireccionIP struct {
 	ip net.IP
 }
