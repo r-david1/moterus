@@ -545,6 +545,11 @@ func construirEvaluadorDeRiesgo(cfg configuracion.Config, pool *pgxpool.Pool, re
 	if err != nil {
 		log.Fatalf("api: REDIS_URL definido pero inválido: %v", err)
 	}
+	if cfg.EntornoApp == "production" && cfg.TurnstileSecretKey == "" {
+		log.Fatalf("api: TURNSTILE_SECRET_KEY no está definida en APP_ENV=production — sin ella el captcha queda " +
+			"fail-closed (ADR 0003/0018) y es la única salida que le queda a una cuenta en cooldown de rate " +
+			"limiting (ADR 0053, regla de la salida alcanzable). Definir TURNSTILE_SECRET_KEY antes de desplegar.")
+	}
 	limitador := confianzaredis.NuevoLimitadorTasa(clienteRedis)
 	verificadorCaptcha := turnstile.NuevoVerificadorCaptcha(cfg.TurnstileSecretKey, cfg.TurnstileVerifyURL, cfg.EntornoApp)
 	perfilOrigenes := confianzaredis.NuevoPerfilDeOrigenes(clienteRedis)

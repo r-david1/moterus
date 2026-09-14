@@ -33,7 +33,7 @@ La tabla de asimetrías que ADR 0018 empezó (y que ADR 0044 y ADR 0051 continua
 ## Consecuencias
 
 - Todo diseño futuro que agregue un mecanismo de denegación de acceso por cuenta tiene que completar esta columna antes de implementarse — es una casilla de checklist, no un párrafo de buenas intenciones.
-- `TURNSTILE_SECRET_KEY` pasa a tratarse como una dependencia dura de la salida del rate limiting por cuenta, no una mejora opcional. Si el proyecto decide que producción debe fallar al arrancar sin esa llave (mismo precedente que ADR 0017 fijó para `DATABASE_URL_APLICACION`), es un cambio de comportamiento operativo que requiere su propia conformidad explícita — no lo fija este ADR por sí solo; ver la nota operativa en `docs/design/bloqueo-cuenta.md` §3.2 punto 2 y §10 paso 4b.
+- `TURNSTILE_SECRET_KEY` se trata como una dependencia dura de la salida del rate limiting por cuenta, no una mejora opcional. Con conformidad explícita del usuario del proyecto (2026-09-14), producción **falla al arrancar** sin esa llave (`cmd/api/main.go`, `construirEvaluadorDeRiesgo`) — mismo patrón que ADR 0020 ya usa para `ACCESO_LLAVE_FIRMA`/`ACCESO_EMISOR`/`ACCESO_AUDIENCIA` (no el de ADR 0017, que solo emite un `WARN` y deja arrancar con el rol dueño como fallback); ver `docs/design/bloqueo-cuenta.md` §3.2 punto 2 y §11 paso 4b.
 - `EstadoBloqueado` de Identidad queda reservado a una decisión humana con sujeto y motivo (INV-BLQ-08): cuando exista un caso de uso administrativo de bloqueo, reutilizará el evento `EstadoUsuarioCambiado` y la acción `usuario.estado_cambiado` ya existentes, sin migración ni catálogo nuevo — porque ese bloqueo sí tendrá una salida (la misma acción humana que lo abrió, revertida).
 
 ## Estado

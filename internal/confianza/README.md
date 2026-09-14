@@ -380,14 +380,13 @@ de cuenta) como decisión de no implementar.
 
 **Consecuencia que la propia regla expone**: la fila "rate limiting por
 cuenta" depende de que `TURNSTILE_SECRET_KEY` esté configurada para que su
-salida exista de verdad. Hoy, arrancar sin esa llave deja el captcha
-fail-closed (ADR 0018) — la única salida del cooldown de cuenta queda
-cerrada desde el primer minuto. Este README no cambia ese comportamiento
-de arranque; lo documenta como una dependencia dura, no una mejora
-opcional (ver `docs/adr/0053-regla-de-la-salida-alcanzable.md` y
-`docs/design/bloqueo-cuenta.md` §3.2 y §10 paso 4b para la nota operativa
-sobre si producción debería fallar al arrancar sin esa llave — es un
-cambio de comportamiento que exige su propia conformidad explícita).
+salida exista de verdad. Con conformidad explícita del usuario del
+proyecto (2026-09-14), `cmd/api/main.go` (`construirEvaluadorDeRiesgo`)
+**falla al arrancar** en `APP_ENV=production` si falta esa llave —mismo
+patrón que ADR 0020 usa para `ACCESO_LLAVE_FIRMA`/`ACCESO_EMISOR`/
+`ACCESO_AUDIENCIA`—, en vez de arrancar con la única salida del cooldown
+de cuenta ya cerrada. Ver `docs/adr/0053-regla-de-la-salida-alcanzable.md`
+y `docs/design/bloqueo-cuenta.md` §3.2 punto 2 y §11 paso 4b.
 
 ## Auditoría
 
