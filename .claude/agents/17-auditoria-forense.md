@@ -57,7 +57,7 @@ CREATE TRIGGER trg_bloquear_mutacion
 
 ## Verificación de integridad
 
-- Job periódico (cron/worker) que recorre la cadena desde el último punto verificado y confirma que cada `hash_actual` coincide con lo recalculado — si encuentra una discontinuidad, dispara alerta inmediata (coordina con `automatizacion-n8n` para la notificación).
+- Job periódico (cron/worker) que recorre la cadena desde el último punto verificado y confirma que cada `hash_actual` coincide con lo recalculado — si encuentra una discontinuidad, dispara alerta inmediata (un adaptador directo, mismo criterio que ADR 0054: sin automatización externa de por medio).
 - **Anclaje externo**: cada N eventos o cada X horas, firma el hash más reciente con una clave privada dedicada (distinta de la clave JWT) y, si el presupuesto lo permite más adelante, ancla ese hash con un servicio de timestamping RFC 3161 — prueba que el registro existía en ese momento, no solo que es internamente consistente.
 - **Replicación a almacenamiento independiente** (a evaluar cuándo haya presupuesto/infra: WORM tipo S3 Object Lock): una copia fuera del alcance de quien administra la base de datos operativa, para poder comparar y detectar manipulación incluso si la base principal es comprometida.
 

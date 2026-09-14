@@ -73,6 +73,7 @@ import (
 	"github.com/r-david1/moterus/internal/plataforma/bd"
 	"github.com/r-david1/moterus/internal/plataforma/cache"
 	"github.com/r-david1/moterus/internal/plataforma/configuracion"
+	"github.com/r-david1/moterus/internal/plataforma/correo"
 	"github.com/r-david1/moterus/internal/plataforma/reloj"
 )
 
@@ -194,7 +195,19 @@ func montarIdentidadYAcceso(ctx, ctxFondo context.Context, app *fiber.App, cfg c
 	registroAuditoriaIdentidad := auditoria.NuevoRegistroAuditoria(pool)
 	publicadorEventosIdentidad := eventos.NuevoPublicadorLog(nil)
 	evaluadorConfianzaIdentidad := construirEvaluadorConfianzaIdentidad(riesgo)
-	notificadorCorreo := notificaciones.NuevoNotificadorCorreoLog(nil)
+
+	var notificadorCorreo identidadpuertos.NotificadorCorreo
+	var estadoNotificadorCorreo string
+	if clienteResend := construirClienteResend(cfg); clienteResend != nil {
+		notificadorCorreo = notificaciones.NuevoNotificadorCorreoResend(clienteResend, cfg.URLFrontend)
+		estadoNotificadorCorreo = "notificador-correo-resend"
+	} else if cfg.EntornoApp == "production" {
+		log.Fatalf("api: RESEND_API_KEY/RESEND_REMITENTE no están definidas en APP_ENV=production — " +
+			"sin envío real de correo, un usuario nuevo queda para siempre en pendiente_verificacion, sin forma de activar su cuenta (ADR 0054).")
+	} else {
+		notificadorCorreo = notificaciones.NuevoNotificadorCorreoLog(nil)
+		estadoNotificadorCorreo = "notificador-correo-log"
+	}
 
 	registrador := aplicacion.NuevoRegistrarUsuarioCasoDeUso(
 		repositorioUsuarios, hasher, verificadorFiltradas, evaluadorConfianzaIdentidad,
@@ -292,7 +305,7 @@ func montarIdentidadYAcceso(ctx, ctxFondo context.Context, app *fiber.App, cfg c
 	if riesgo != nil {
 		estadoConfianza = "confianza-real(redis+turnstile)"
 	}
-	log.Printf("api: contexto Identidad montado (postgres, argon2id, hibp, auditoria, eventos-log, %s, notificador-correo-log)", estadoConfianza)
+	log.Printf("api: contexto Identidad montado (postgres, argon2id, hibp, auditoria, eventos-log, %s, %s)", estadoConfianza, estadoNotificadorCorreo)
 }
 
 // montarAcceso ensambla el bounded context Acceso completo (ADR 0019/0020)
@@ -468,7 +481,19 @@ func montarTenencia(
 
 	registroAuditoriaTenencia := tenenciaauditoria.NuevoRegistroAuditoria(pool)
 	publicadorEventosTenencia := tenenciaeventos.NuevoPublicadorLog(nil)
-	notificadorInvitaciones := tenencianotificaciones.NuevoNotificadorInvitacionesLog(nil)
+
+	var notificadorInvitaciones tenenciapuertos.NotificadorInvitaciones
+	var estadoNotificadorInvitaciones string
+	if clienteResend := construirClienteResend(cfg); clienteResend != nil {
+		notificadorInvitaciones = tenencianotificaciones.NuevoNotificadorInvitacionesResend(clienteResend, cfg.URLFrontend)
+		estadoNotificadorInvitaciones = "notificador-invitaciones-resend"
+	} else if cfg.EntornoApp == "production" {
+		log.Fatalf("api: RESEND_API_KEY/RESEND_REMITENTE no están definidas en APP_ENV=production — " +
+			"sin envío real de correo, una invitación a una organización nunca le llega a nadie (ADR 0054).")
+	} else {
+		notificadorInvitaciones = tenencianotificaciones.NuevoNotificadorInvitacionesLog(nil)
+		estadoNotificadorInvitaciones = "notificador-invitaciones-log"
+	}
 	sujetos := tenenciaidentidad.NuevoVerificadorSujetos(consultorIdentidad)
 
 	var evaluadorConfianzaTenencia tenenciapuertos.EvaluadorConfianza
@@ -502,7 +527,7 @@ func montarTenencia(
 	if riesgo != nil {
 		estadoConfianza = "confianza-real(redis+turnstile)"
 	}
-	log.Printf("api: contexto Tenencia montado (postgres+rls, auditoria, eventos-log, notificador-invitaciones-log, %s)", estadoConfianza)
+	log.Printf("api: contexto Tenencia montado (postgres+rls, auditoria, eventos-log, %s, %s)", estadoNotificadorInvitaciones, estadoConfianza)
 
 	return autorizador, consultas
 }
@@ -520,6 +545,21 @@ func exigirEnProduccionOAdvertir(cfg configuracion.Config, nombreVar, valor, def
 	}
 	log.Printf("api: %s no está definida; usando el valor de desarrollo %q", nombreVar, defectoDesarrollo)
 	return defectoDesarrollo
+}
+
+// construirClienteResend monta el cliente compartido de envío de correo
+// real (ADR 0054: Resend, sin n8n de por medio — el envío es una llamada
+// HTTP directa desde el propio servicio, no un efecto delegado a un
+// workflow externo) si RESEND_API_KEY y RESEND_REMITENTE están definidas,
+// o nil si no. No decide fail-fast/fallback por sí solo: cada llamador
+// (Identidad, Tenencia) tiene su propio mensaje de qué se rompe si el
+// correo no puede enviarse, así que esa decisión vive en cada uno — ver
+// los dos bloques que llaman a esta función.
+func construirClienteResend(cfg configuracion.Config) *correo.ClienteResend {
+	if cfg.ResendAPIKey == "" || cfg.ResendRemitente == "" {
+		return nil
+	}
+	return correo.NuevoClienteResend(cfg.ResendAPIKey, cfg.ResendRemitente)
 }
 
 // construirEvaluadorDeRiesgo monta el motor real de Confianza (ADR 0018:

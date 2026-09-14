@@ -142,9 +142,9 @@ type PublicadorEventos interface {
 
 // NotificadorInvitaciones entrega el token EN CLARO al destinatario. Es el único
 // lugar del sistema por el que ese valor puede salir del proceso (INV-TEN-23).
-// Stub log-only en este hito, con WARN explícito al arrancar; el envío real es
-// trabajo del agente automatizacion-n8n (mismo patrón que NotificadorCorreo de
-// Identidad).
+// Implementación de producción: NotificadorInvitacionesResend, directo
+// contra Resend (ADR 0054); NotificadorInvitacionesLog es el fallback de
+// desarrollo.
 type NotificadorInvitaciones interface {
 	EnviarInvitacion(ctx context.Context, destinatario dominio.CorreoDestinatario,
 		nombreOrganizacion string, rol dominio.Rol, tokenPlano string, expiraEn time.Time) error

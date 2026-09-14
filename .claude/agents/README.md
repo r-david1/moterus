@@ -11,7 +11,7 @@ cp agentes-claude-code/*.md .claude/agents/
 
 Claude Code los detecta automáticamente. Para invocar uno directamente: `@orquestador-auth avanza con el flujo de login`. Para dejar que Claude elija el subagente correcto según la tarea, simplemente describe lo que necesitas — el campo `description` de cada agente es el que usa Claude Code para decidir a quién delegar.
 
-## 2. Configuración de los MCPs externos (context7, LightRAG, n8n)
+## 2. Configuración de los MCPs externos (context7, LightRAG)
 
 Estos **no son agentes** — son servidores MCP que le dan herramientas nuevas a los agentes de arriba. Se configuran en `.claude/settings.json` (o vía `claude mcp add`).
 
@@ -40,14 +40,7 @@ LightRAG corre como servidor propio (no es un paquete npx público oficial) — 
 ```
 Indexa inicialmente toda la carpeta `/docs/adr/` y este mismo README como punto de partida.
 
-### n8n MCP
-
-```bash
-claude mcp add n8n -- npx -y n8n-mcp
-```
-Necesitas tu instancia n8n corriendo (self-hosted o cloud) y configurar `N8N_API_URL` y `N8N_API_KEY` como variables de entorno del servidor MCP.
-
-Verifica que los tres quedaron activos con `claude mcp list` antes de empezar a trabajar.
+Verifica que los dos quedaron activos con `claude mcp list` antes de empezar a trabajar.
 
 ## 3. Cómo fluye el trabajo
 
@@ -64,7 +57,7 @@ Usuario → orquestador-auth
               ├─→ base-datos (en paralelo con infraestructura — incluye auditoria desde el primer momento)
               │
               ├─→ seguridad-perimetral / fingerprinting-comportamiento / otp-mfa / colas-virtuales
-              │        └─→ automatizacion-n8n (para envío real de OTP/alertas, incluyendo alertas de integridad de auditoría)
+              │        └─→ envío real de correo/OTP: adaptador directo contra el proveedor (ADR 0054, sin automatización externa)
               │
               ├─→ tests-qa (obligatorio, siempre al cerrar — incluye verificación de la cadena de hashes)
               ├─→ documentacion (OpenAPI, ADR, guía de integración, catálogo de acciones auditables)

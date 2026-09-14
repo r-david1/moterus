@@ -1,0 +1,38 @@
+# ADR 0054 — Envío real de correo directo desde Go vía Resend, sin n8n
+
+## Contexto
+
+Desde el cierre del MVP de Identidad y de Tenencia, el envío real de correo (verificación de cuenta, invitaciones a organización) quedó como stub log-only (`NotificadorCorreoLog`, `NotificadorInvitacionesLog`), con la integración real asumida —en varios comentarios de código y de diseño— como "trabajo del agente `automatizacion-n8n`": el servicio Go dispararía un webhook firmado hacia una instancia de n8n, y n8n hablaría con el proveedor transaccional real.
+
+Esa asunción nunca se implementó ni se disputó — no hay ninguna instancia de n8n en `deployments/docker-compose.yml`, ningún webhook saliente en el código, y el MCP de n8n no está conectado en ningún entorno de desarrollo de este proyecto. Era, en la práctica, una decisión de diseño tomada por defecto (copiada de la carta original del agente `automatizacion-n8n`) y nunca puesta a prueba contra la necesidad real: el correo de verificación y el de invitación son parte del **contrato de negocio de autenticación** (un usuario no puede activar su cuenta ni un invitado sumarse a una organización sin ellos), no un efecto secundario best-effort tipo alerta operativa o notificación a Slack — que es el tipo de automatización para la que la carta de `automatizacion-n8n` sí tiene sentido ("efectos secundarios y notificaciones... fuera del camino crítico").
+
+Al revisar qué haría falta para que un usuario real pudiera completar el flujo completo, se decidió reconsiderar esta pieza sin más historia detrás que la que se documenta acá.
+
+## Decisión
+
+**El servicio Go envía el correo real directamente, sin n8n de por medio.** `internal/plataforma/correo.ClienteResend` es un cliente HTTP mínimo (sin SDK, mismo criterio que `confianza/adaptadores/turnstile.VerificadorCaptcha` para Cloudflare) contra la API de Resend (`https://api.resend.com/emails`). Vive en `internal/plataforma` porque es kernel técnico puro — "mandar este asunto/cuerpo a esta dirección" no tiene ningún tipo de negocio involucrado, igual criterio que `plataforma/cache` para Redis.
+
+Cada bounded context sigue dueño de su propio contenido: `identidad/adaptadores/notificaciones.NotificadorCorreoResend` construye el correo de verificación (token de 32 bytes, con enlace si `URL_FRONTEND` está configurada, o el token en claro si no — todavía no existe un frontend propio, ADR 0002); `tenencia/adaptadores/notificaciones.NotificadorInvitacionesResend` construye el de invitación. Ninguno de los dos conoce a Resend directamente: ambos reciben un `*correo.ClienteResend` ya construido y lo usan solo como transporte, mismo patrón de puertos/adaptadores que el resto del proyecto.
+
+`NotificadorCorreoLog`/`NotificadorInvitacionesLog` **no se eliminan**: siguen siendo el fallback de desarrollo cuando `RESEND_API_KEY`/`RESEND_REMITENTE` no están configuradas (mismo criterio "modo inseguro posible pero nunca silencioso" que el resto del proyecto), excepto en `APP_ENV=production`, donde el proceso **no arranca** sin ellas — mismo patrón que ADR 0020 (`ACCESO_LLAVE_FIRMA`) y ADR 0053 (`TURNSTILE_SECRET_KEY`): un despliegue de producción sin envío real de correo deja a cualquier usuario nuevo atrapado para siempre en `pendiente_verificacion`, y a cualquier invitación sin destinatario real — no es un modo degradado tolerable, es directamente el sistema no cumpliendo su función.
+
+Se agrega `URL_FRONTEND` (opcional, sin fail-fast) como la base de un futuro frontend propio: si está configurada, los correos incluyen un enlace clicable; si no, presentan el token en claro con instrucciones para pasarlo directamente al endpoint HTTP correspondiente. No inventa un frontend que no existe — solo deja el punto de extensión nombrado.
+
+**Se elimina el agente `automatizacion-n8n` y toda referencia a n8n en el proyecto** (agente, README de agentes, comentarios de diseño y de código): no había ninguna automatización real construida sobre él, y las dos únicas necesidades concretas que se le habían asignado (correo de verificación, correo de invitación) ya no lo necesitan. Si en el futuro aparece una necesidad real de automatización externa (alertas operativas a Slack, sincronización con otra herramienta) que sí encaje en el criterio "efecto secundario fuera del camino crítico de negocio", se vuelve a evaluar entonces con la necesidad concreta delante — no con una automatización elegida antes de que existiera una razón para ella.
+
+## Alternativas consideradas
+
+- **Mantener la ruta hacia n8n**: descartado — exigiría levantar y operar una instancia de n8n (o depender de n8n Cloud) solo para reenviar una llamada HTTP a Resend, agregando un salto de red, un punto de fallo y una superficie operativa (webhooks firmados, monitoreo del propio n8n) para una necesidad que un cliente HTTP de 150 líneas resuelve directamente. El criterio que sí justificaría n8n —desacoplar un efecto verdaderamente best-effort del camino crítico— no aplica aquí: el correo de verificación **es** el camino crítico de que un usuario pueda usar su cuenta.
+- **SMTP genérico en vez de una API HTTP de proveedor**: descartado por el usuario del proyecto al decidir el proveedor — Resend expone una API HTTP simple (una request, una respuesta JSON), sin la complejidad de gestionar una conexión SMTP persistente, autenticación por protocolo, ni reintentos a nivel de socket.
+- **Un SDK oficial de Resend** (`github.com/resend/resend-go`) en vez de HTTP directo: descartado por consistencia con el resto del proyecto — Turnstile ya estableció el precedente de no traer una dependencia nueva para una API HTTP de forma trivial (un POST, un JSON de respuesta); agregar un SDK por proveedor cuando el propio proveedor puede cambiarse (el puerto es agnóstico) no se justifica.
+
+## Consecuencias
+
+- `RESEND_API_KEY` y `RESEND_REMITENTE` pasan a la lista de configuración obligatoria en producción, junto a `ACCESO_LLAVE_FIRMA`, `TURNSTILE_SECRET_KEY` e `IDENTIDAD_LLAVE_CIFRADO_MFA`. Cualquier checklist de "listo para producción" debe incluirlas.
+- `RESEND_REMITENTE` debe ser una dirección de un dominio verificado en la cuenta de Resend — una dirección arbitraria no funciona; es responsabilidad operativa de quien despliegue, no algo que este ADR o el código puedan validar en tiempo de arranque sin llamar a la red.
+- El envío de correo sigue siendo best-effort desde el punto de vista del caso de uso (`RegistrarUsuarioCasoDeUso`/`InvitarMiembroCasoDeUso` no abortan la operación de negocio si el envío falla, ya lo eran antes de este ADR) — un fallo de Resend en tiempo de ejecución (cuenta suspendida, límite de envíos alcanzado) se loguea como `WARN` y no rompe el registro/la invitación, pero si es sostenido, ningún usuario nuevo recibe su correo hasta que se resuelva. No hay reintento automático ni cola de reenvío en este cierre — el usuario ya tiene el flujo de reenvío de verificación (`POST /identidad/verificaciones-correo/reenvios`) como mitigación manual.
+- Se elimina `.claude/agents/16-automatizacion-n8n.md` y las referencias a n8n en `.claude/agents/07-otp-mfa.md`, `.claude/agents/17-auditoria-forense.md` y `.claude/agents/README.md` (incluida la sección de configuración del MCP de n8n). El diseño de OTP/MFA (`docs/design/otp-mfa.md`) sigue limitado a TOTP en el MVP por las mismas razones que ya tenía (stateless en el servidor); la mención a "o el agente automatizacion-n8n si se decide enrutar por ahí" para un futuro `EmisorOTP` de email/SMS se retira sin reemplazo — si ese candidato se cierra alguna vez, será con un adaptador directo, mismo criterio que este ADR.
+
+## Estado
+
+Aceptado.

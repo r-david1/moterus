@@ -120,9 +120,9 @@ type RepositorioTokensVerificacion interface {
 	Eliminar(ctx context.Context, usuarioID dominio.IDUsuario) error
 }
 
-// NotificadorCorreo envía el enlace/token de verificación al usuario. La
-// implementación real de envío (SMTP, proveedor transaccional, etc.) es
-// trabajo de infraestructura; en este hito puede ser un stub log-only.
+// NotificadorCorreo envía el enlace/token de verificación al usuario.
+// Implementación de producción: NotificadorCorreoResend, directo contra
+// Resend (ADR 0054); NotificadorCorreoLog es el fallback de desarrollo.
 type NotificadorCorreo interface {
 	EnviarVerificacion(ctx context.Context, correo dominio.Correo, tokenPlano string) error
 }

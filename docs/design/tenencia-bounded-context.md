@@ -36,7 +36,7 @@ Es la pregunta que hoy **nadie** contesta en el sistema. Identidad sabe *quién 
 | Membresías: qué usuario pertenece a qué organización y con qué rol | Emitir/validar el token, sesiones, refresco → **Acceso** |
 | Catálogo cerrado de roles y la matriz rol → permisos | Rate limiting, captcha, score de riesgo → **Confianza** |
 | Decidir "¿este sujeto puede ejecutar esta acción en esta organización?" | Persistir la bitácora forense y encadenar hashes → **Auditoría** |
-| Invitaciones por correo y su redención | Enviar el correo de la invitación (stub log-only; el envío real es del agente `automatizacion-n8n`) |
+| Invitaciones por correo y su redención | Enviar el correo de la invitación (`NotificadorInvitacionesResend`, directo contra Resend — ADR 0054) |
 | El aislamiento multi-tenant en la base de datos (RLS) | Verificar contraseñas, MFA, estado de la cuenta (Tenencia *pregunta* por puerto; **Identidad** *decide*) |
 
 **Consecuencia de diseño no obvia #1 (la más importante de todo el documento)**: el token de acceso **no trae** `roles`, `permisos`, `org_id` ni `tenant_id` — es INV-ACC-12, ya implementado y ya documentado en `internal/acceso/README.md` (*"Si tu integración necesita saber el rol o la organización del usuario, ese dato no está en el JWT [...] no lo infieras del token"*). Tenencia **no pide que eso cambie**. La autorización se resuelve preguntándole a Tenencia por puerto, en cada petición, con el `sub` que el token ya validado aportó y con un `IDOrganizacion` **explícito** que viene de la ruta. Ver §3.7, INV-TEN-13/15 y *ADR candidato 0030* — que es exactamente la "decisión adyacente" que ADR candidato 0025 de Acceso dejó abierta y delegó en Tenencia.
@@ -739,9 +739,9 @@ type PublicadorEventos interface {
 
 // NotificadorInvitaciones entrega el token EN CLARO al destinatario. Es el único
 // lugar del sistema por el que ese valor puede salir del proceso (INV-TEN-23).
-// Stub log-only en este hito, con WARN explícito al arrancar; el envío real es
-// trabajo del agente automatizacion-n8n (mismo patrón que NotificadorCorreo de
-// Identidad).
+// Implementación de producción: NotificadorInvitacionesResend (ADR 0054,
+// directo contra Resend); el stub log-only sigue como fallback de desarrollo,
+// con WARN explícito al arrancar.
 type NotificadorInvitaciones interface {
     EnviarInvitacion(ctx context.Context, destinatario dominio.CorreoDestinatario,
         nombreOrganizacion string, rol dominio.Rol, tokenPlano string, expiraEn time.Time) error

@@ -77,6 +77,29 @@ type Config struct {
 	// (los secretos MFA cifrados con ella quedan indescifrables al
 	// reiniciar el proceso).
 	IdentidadLlaveCifradoMFA string
+	// ResendAPIKey es la llave de API de Resend (env RESEND_API_KEY, ADR
+	// 0054) usada por plataforma/correo.ClienteResend para enviar correo
+	// transaccional real (verificación de cuenta en Identidad, invitaciones
+	// en Tenencia). Si está vacía, ambos contextos caen a su adaptador
+	// log-only (NotificadorCorreoLog/NotificadorInvitacionesLog) fuera de
+	// producción, con el mismo WARN explícito que el resto del proyecto; en
+	// producción el proceso no arranca sin ella (mismo criterio que
+	// TURNSTILE_SECRET_KEY, ADR 0053).
+	ResendAPIKey string
+	// ResendRemitente es la dirección "From" con la que se envían los
+	// correos (env RESEND_REMITENTE), formato "Nombre <correo@dominio>".
+	// Debe ser un remitente de un dominio verificado en Resend — una
+	// dirección arbitraria no funciona. Mismo criterio de arranque que
+	// ResendAPIKey.
+	ResendRemitente string
+	// URLFrontend es la URL base de un futuro cliente/frontend (env
+	// URL_FRONTEND) que este servicio no incluye (ADR 0002: el producto es
+	// el servicio de auth, no un frontend). Si está definida, los correos
+	// de verificación/invitación incluyen un enlace
+	// "{URLFrontend}/<ruta>?token=<token>"; si no, el correo presenta el
+	// token en claro para uso directo contra la API. Opcional: ningún
+	// adaptador falla al arrancar sin ella.
+	URLFrontend string
 }
 
 // CargarDesdeEntorno construye un Config leyendo variables de entorno,
@@ -101,6 +124,9 @@ func CargarDesdeEntorno() (Config, error) {
 		AccesoLlaveFirma:                os.Getenv("ACCESO_LLAVE_FIRMA"),
 		AccesoLlavesVerificacionPrevias: os.Getenv("ACCESO_LLAVES_VERIFICACION_PREVIAS"),
 		IdentidadLlaveCifradoMFA:        os.Getenv("IDENTIDAD_LLAVE_CIFRADO_MFA"),
+		ResendAPIKey:                    os.Getenv("RESEND_API_KEY"),
+		ResendRemitente:                 os.Getenv("RESEND_REMITENTE"),
+		URLFrontend:                     os.Getenv("URL_FRONTEND"),
 	}, nil
 }
 

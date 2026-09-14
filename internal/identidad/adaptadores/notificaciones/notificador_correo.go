@@ -2,10 +2,10 @@
 // paquete propio (no dentro de adaptadores/eventos) porque "enviar un
 // correo con un secreto de un solo uso" es una responsabilidad distinta de
 // "publicar un evento de dominio best-effort": el receptor natural en
-// producción (automatizacion-n8n) no es el mismo canal que
-// PublicadorEventos, y el día que exista un envío real (SMTP, proveedor
-// transaccional) tiene su propio ciclo de configuración/credenciales que no
-// debe mezclarse con adaptadores/eventos.
+// producción (Resend, ver notificador_correo_resend.go y ADR 0054) no es
+// el mismo canal que PublicadorEventos, y el envío real tiene su propio
+// ciclo de configuración/credenciales que no debe mezclarse con
+// adaptadores/eventos.
 package notificaciones
 
 import (
@@ -19,10 +19,9 @@ import (
 // NotificadorCorreoLog implementa puertos.NotificadorCorreo registrando el
 // correo destino y el token en el logger estructurado, sin enviar ningún
 // correo real. Mismo patrón que eventos.PublicadorLog y
-// confianza.EvaluadorConfianzaNoOp: stub log-only con WARN explícito de que
-// no hay integración real de envío de correo (sección 3.4 del diseño:
-// "envío real del correo: fuera de alcance de este hito... es trabajo del
-// agente automatizacion-n8n").
+// confianza.EvaluadorConfianzaNoOp: stub log-only con WARN explícito. Es el
+// fallback de desarrollo cuando RESEND_API_KEY no está configurada — la
+// implementación de producción es NotificadorCorreoResend (ADR 0054).
 //
 // Este es el ÚNICO lugar del código donde el token de verificación en claro
 // puede aparecer en un log (INV-ID-21 lo permite explícitamente aquí: es
@@ -43,7 +42,7 @@ func NuevoNotificadorCorreoLog(log *slog.Logger) *NotificadorCorreoLog {
 	}
 	log.Warn("identidad/adaptadores/notificaciones: NotificadorCorreo en modo log-only — " +
 		"NO hay integración real de envío de correo. El token de verificación solo queda en el log del servidor. " +
-		"NO USAR EN PRODUCCIÓN. El envío real (SMTP/proveedor transaccional) es trabajo del agente automatizacion-n8n.")
+		"NO USAR EN PRODUCCIÓN. Definir RESEND_API_KEY/RESEND_REMITENTE para el envío real (ADR 0054).")
 	return &NotificadorCorreoLog{log: log}
 }
 

@@ -33,7 +33,7 @@ type OTPCode struct {
 - Hashear el código antes de persistirlo (igual que un password, aunque sea corta duración).
 - Rate limit propio para reenvío de OTP (ej. máx 1 cada 60s, máx 5/hora) — se apoya en `seguridad-perimetral` pero es un límite específico de este flujo, no lo reinventes ahí.
 - Bloqueo tras N intentos fallidos de verificación (no de reenvío) — invalida el código y exige uno nuevo.
-- El envío real (email/SMS) se hace vía **puerto** (`ports.OTPSender`) — la implementación concreta (SMTP, proveedor SMS, o el agente `automatizacion-n8n` si se decide enrutar por n8n) es un adapter intercambiable.
+- El envío real (email/SMS) se hace vía **puerto** (`ports.OTPSender`) — la implementación concreta (Resend, proveedor SMS, etc., ver ADR 0054: adaptador directo, sin automatización externa) es un adapter intercambiable.
 - `login_step_up` se dispara automáticamente cuando `TrustScore` (del contexto Trust) cae bajo el umbral definido — este agente coordina con `fingerprinting-comportamiento`, no reimplementa el scoring.
 
 ## Al terminar
