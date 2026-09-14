@@ -142,9 +142,9 @@ type PublicadorEventos interface {
 
 // NotificadorInvitaciones entrega el token EN CLARO al destinatario. Es el único
 // lugar del sistema por el que ese valor puede salir del proceso (INV-TEN-23).
-// Implementación de producción: NotificadorInvitacionesResend, directo
-// contra Resend (ADR 0054); NotificadorInvitacionesLog es el fallback de
-// desarrollo.
+// Implementación de producción: NotificadorInvitacionesTransaccional, vía
+// SMTP genérico (ADR 0054/0055); NotificadorInvitacionesLog es el
+// fallback de desarrollo.
 type NotificadorInvitaciones interface {
 	EnviarInvitacion(ctx context.Context, destinatario dominio.CorreoDestinatario,
 		nombreOrganizacion string, rol dominio.Rol, tokenPlano string, expiraEn time.Time) error

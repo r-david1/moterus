@@ -77,21 +77,23 @@ type Config struct {
 	// (los secretos MFA cifrados con ella quedan indescifrables al
 	// reiniciar el proceso).
 	IdentidadLlaveCifradoMFA string
-	// ResendAPIKey es la llave de API de Resend (env RESEND_API_KEY, ADR
-	// 0054) usada por plataforma/correo.ClienteResend para enviar correo
-	// transaccional real (verificación de cuenta en Identidad, invitaciones
-	// en Tenencia). Si está vacía, ambos contextos caen a su adaptador
+	// SMTPHost/SMTPPuerto/SMTPUsuario/SMTPContrasena/SMTPRemitente
+	// configuran plataforma/correo.ClienteSMTP (env SMTP_HOST/SMTP_PUERTO/
+	// SMTP_USUARIO/SMTP_CONTRASENA/SMTP_REMITENTE, ADR 0055) usado por
+	// Identidad (verificación de cuenta) y Tenencia (invitaciones) para
+	// enviar correo transaccional real: una cuenta de correo existente
+	// (Gmail con "contraseña de aplicación", Workspace, un proveedor
+	// propio) — no exige verificar un dominio propio, que este proyecto no
+	// tiene. Si SMTPHost está vacío, ambos contextos caen a su adaptador
 	// log-only (NotificadorCorreoLog/NotificadorInvitacionesLog) fuera de
 	// producción, con el mismo WARN explícito que el resto del proyecto; en
-	// producción el proceso no arranca sin ella (mismo criterio que
+	// producción el proceso no arranca sin él (mismo criterio que
 	// TURNSTILE_SECRET_KEY, ADR 0053).
-	ResendAPIKey string
-	// ResendRemitente es la dirección "From" con la que se envían los
-	// correos (env RESEND_REMITENTE), formato "Nombre <correo@dominio>".
-	// Debe ser un remitente de un dominio verificado en Resend — una
-	// dirección arbitraria no funciona. Mismo criterio de arranque que
-	// ResendAPIKey.
-	ResendRemitente string
+	SMTPHost       string
+	SMTPPuerto     int
+	SMTPUsuario    string
+	SMTPContrasena string
+	SMTPRemitente  string
 	// URLFrontend es la URL base de un futuro cliente/frontend (env
 	// URL_FRONTEND) que este servicio no incluye (ADR 0002: el producto es
 	// el servicio de auth, no un frontend). Si está definida, los correos
@@ -111,6 +113,15 @@ func CargarDesdeEntorno() (Config, error) {
 		return Config{}, fmt.Errorf("configuracion: PORT invalido %q: %w", puertoCrudo, err)
 	}
 
+	// 587 (submission con STARTTLS) es el puerto estándar que aceptan
+	// Gmail/Workspace y la inmensa mayoría de proveedores SMTP — default
+	// razonable para no obligar a fijar SMTP_PUERTO en el caso común.
+	smtpPuertoCrudo := valorODefecto("SMTP_PUERTO", "587")
+	smtpPuerto, err := strconv.Atoi(smtpPuertoCrudo)
+	if err != nil {
+		return Config{}, fmt.Errorf("configuracion: SMTP_PUERTO invalido %q: %w", smtpPuertoCrudo, err)
+	}
+
 	return Config{
 		Puerto:                          puerto,
 		EntornoApp:                      valorODefecto("APP_ENV", "development"),
@@ -124,8 +135,11 @@ func CargarDesdeEntorno() (Config, error) {
 		AccesoLlaveFirma:                os.Getenv("ACCESO_LLAVE_FIRMA"),
 		AccesoLlavesVerificacionPrevias: os.Getenv("ACCESO_LLAVES_VERIFICACION_PREVIAS"),
 		IdentidadLlaveCifradoMFA:        os.Getenv("IDENTIDAD_LLAVE_CIFRADO_MFA"),
-		ResendAPIKey:                    os.Getenv("RESEND_API_KEY"),
-		ResendRemitente:                 os.Getenv("RESEND_REMITENTE"),
+		SMTPHost:                        os.Getenv("SMTP_HOST"),
+		SMTPPuerto:                      smtpPuerto,
+		SMTPUsuario:                     os.Getenv("SMTP_USUARIO"),
+		SMTPContrasena:                  os.Getenv("SMTP_CONTRASENA"),
+		SMTPRemitente:                   os.Getenv("SMTP_REMITENTE"),
 		URLFrontend:                     os.Getenv("URL_FRONTEND"),
 	}, nil
 }

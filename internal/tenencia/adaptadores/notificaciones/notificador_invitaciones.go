@@ -19,8 +19,8 @@ import (
 // estructurado, sin enviar ningún correo real. Mismo patrón que
 // identidad/adaptadores/notificaciones.NotificadorCorreoLog: stub log-only
 // con WARN explícito de arranque. Es el fallback de desarrollo cuando
-// RESEND_API_KEY no está configurada — la implementación de producción es
-// NotificadorInvitacionesResend (ADR 0054).
+// SMTP_HOST no está configurada — la implementación de producción es
+// NotificadorInvitacionesTransaccional (ADR 0054/0055).
 //
 // Este es el ÚNICO lugar del código, junto con InvitarMiembroCasoDeUso
 // (que se lo entrega una sola vez), donde el token de invitación en claro
@@ -42,7 +42,7 @@ func NuevoNotificadorInvitacionesLog(log *slog.Logger) *NotificadorInvitacionesL
 	}
 	log.Warn("tenencia/adaptadores/notificaciones: NotificadorInvitaciones en modo log-only — " +
 		"NO hay integración real de envío de correo. El token de invitación solo queda en el log del servidor. " +
-		"NO USAR EN PRODUCCIÓN. Definir RESEND_API_KEY/RESEND_REMITENTE para el envío real (ADR 0054).")
+		"NO USAR EN PRODUCCIÓN. Definir SMTP_HOST/SMTP_REMITENTE para el envío real (ADR 0054/0055).")
 	return &NotificadorInvitacionesLog{log: log}
 }
 

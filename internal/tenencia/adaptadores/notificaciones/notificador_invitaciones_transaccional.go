@@ -10,29 +10,31 @@ import (
 	"github.com/r-david1/moterus/internal/tenencia/puertos"
 )
 
-// NotificadorInvitacionesResend implementa puertos.NotificadorInvitaciones
-// enviando un correo real vía plataforma/correo.ClienteResend (ADR 0054).
-// Es la implementación de producción; NotificadorInvitacionesLog sigue
-// existiendo como fallback de desarrollo cuando RESEND_API_KEY no está
-// configurada — ver cmd/api/main.go.
-type NotificadorInvitacionesResend struct {
-	cliente     *correo.ClienteResend
+// NotificadorInvitacionesTransaccional implementa
+// puertos.NotificadorInvitaciones enviando un correo real vía un
+// correo.EnviadorCorreo (SMTP genérico hoy — ADR 0054/0055, el proveedor
+// concreto es intercambiable detrás de la interfaz). Es la implementación
+// de producción;
+// NotificadorInvitacionesLog sigue existiendo como fallback de desarrollo
+// cuando no hay ningún proveedor configurado — ver cmd/api/main.go.
+type NotificadorInvitacionesTransaccional struct {
+	enviador    correo.EnviadorCorreo
 	urlFrontend string
 }
 
-var _ puertos.NotificadorInvitaciones = (*NotificadorInvitacionesResend)(nil)
+var _ puertos.NotificadorInvitaciones = (*NotificadorInvitacionesTransaccional)(nil)
 
-// NuevoNotificadorInvitacionesResend construye el adaptador. urlFrontend
-// puede ir vacío (ver EnviarInvitacion).
-func NuevoNotificadorInvitacionesResend(cliente *correo.ClienteResend, urlFrontend string) *NotificadorInvitacionesResend {
-	return &NotificadorInvitacionesResend{cliente: cliente, urlFrontend: urlFrontend}
+// NuevoNotificadorInvitacionesTransaccional construye el adaptador.
+// urlFrontend puede ir vacío (ver EnviarInvitacion).
+func NuevoNotificadorInvitacionesTransaccional(enviador correo.EnviadorCorreo, urlFrontend string) *NotificadorInvitacionesTransaccional {
+	return &NotificadorInvitacionesTransaccional{enviador: enviador, urlFrontend: urlFrontend}
 }
 
 // EnviarInvitacion construye el correo de invitación y lo envía. Mismo
-// criterio que NotificadorCorreoResend.EnviarVerificacion sobre el enlace
-// vs. token en claro: el token de invitación también es de alta entropía
-// (INV-TEN-23), pensado para viajar en una URL.
-func (n *NotificadorInvitacionesResend) EnviarInvitacion(
+// criterio que NotificadorCorreoTransaccional.EnviarVerificacion sobre el
+// enlace vs. token en claro: el token de invitación también es de alta
+// entropía (INV-TEN-23), pensado para viajar en una URL.
+func (n *NotificadorInvitacionesTransaccional) EnviarInvitacion(
 	ctx context.Context,
 	destinatario dominio.CorreoDestinatario,
 	nombreOrganizacion string,
@@ -58,7 +60,7 @@ func (n *NotificadorInvitacionesResend) EnviarInvitacion(
 		nombreOrganizacion, rol.Valor(), accion, expiraEn.Format(time.RFC1123),
 	)
 
-	if err := n.cliente.Enviar(ctx, correo.Mensaje{
+	if err := n.enviador.Enviar(ctx, correo.Mensaje{
 		Destinatario: destinatario.Normalizado(),
 		Asunto:       fmt.Sprintf("Invitación a %s", nombreOrganizacion),
 		TextoPlano:   cuerpo,
