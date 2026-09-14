@@ -1,0 +1,14 @@
+-- Cierra y borra la sala de carga abierta por abrir_sala_carga.sql.
+--
+-- DELETE en vez de solo marcar 'cerrada': a diferencia de una sala real
+-- (que se conserva como evidencia operativa, sin DELETE en los privilegios
+-- de rol_aplicacion), esta fila es un artefacto de prueba de carga bajo un
+-- alias fijo ("carga-k6-login") pensado para poder volver a abrirse en
+-- la siguiente corrida sin colisionar con salas_espera_vigente_idx (INV-COLA-01:
+-- a lo sumo una sala no cerrada por alcance+ruta). Se corre como rol dueño
+-- (misma conexión que abrir_sala_carga.sql), no como rol_aplicacion.
+--
+-- Uso:
+--   docker exec -i auth-service-postgres psql -U auth_service -d auth_service \
+--     < test/carga/cerrar_sala_carga.sql
+DELETE FROM salas_espera WHERE alias = 'carga-k6-login';

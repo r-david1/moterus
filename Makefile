@@ -1,4 +1,4 @@
-.PHONY: build test run migrate-up migrate-down docker-up docker-down vet tidy
+.PHONY: build test run migrate-up migrate-down docker-up docker-down vet tidy carga carga-colas-preparar carga-colas carga-colas-limpiar
 
 APP_NAME := auth-service
 # Rol dueño de la base — solo para DDL (migraciones). No lo use el proceso api.
@@ -28,6 +28,25 @@ test-integracion:
 # este Makefile a propósito (no es una dependencia de build/test normal).
 carga:
 	k6 run test/carga/rate_limiting_test.js
+
+# carga-colas-* valida la premisa completa de las colas de acceso virtual
+# (docs/design/colas-virtuales.md §11): 5000 usuarios en 10s contra una
+# sala de ritmo=50/s. Tres pasos porque abrir/cerrar una sala de alcance
+# "sistema" es, por diseño, una operación fuera de la API pública (ADR
+# 0045) — se hace por SQL directo contra el contenedor de Postgres, no por
+# HTTP ni por este Makefile. Ver la cabecera de
+# test/carga/colas_virtuales_test.js para la secuencia completa, incluido
+# el FLUSHALL de Redis entre corridas.
+carga-colas-preparar:
+	docker exec -i auth-service-postgres psql -U auth_service -d auth_service < test/carga/abrir_sala_carga.sql
+	@echo "Sala abierta. Esperar ~15-20s (ReconciliarSalas) antes de 'make carga-colas'."
+
+carga-colas:
+	k6 run --local-ips=127.0.0.0/16 --out json=resultados_colas.json test/carga/colas_virtuales_test.js
+	bash test/carga/analizar_admision.sh resultados_colas.json
+
+carga-colas-limpiar:
+	docker exec -i auth-service-postgres psql -U auth_service -d auth_service < test/carga/cerrar_sala_carga.sql
 
 vet:
 	go vet ./...
