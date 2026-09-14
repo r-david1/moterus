@@ -121,8 +121,9 @@ type RepositorioTokensVerificacion interface {
 }
 
 // NotificadorCorreo envía el enlace/token de verificación al usuario.
-// Implementación de producción: NotificadorCorreoResend, directo contra
-// Resend (ADR 0054); NotificadorCorreoLog es el fallback de desarrollo.
+// Implementación de producción: NotificadorCorreoTransaccional, vía SMTP
+// genérico (ADR 0054/0055); NotificadorCorreoLog es el fallback de
+// desarrollo.
 type NotificadorCorreo interface {
 	EnviarVerificacion(ctx context.Context, correo dominio.Correo, tokenPlano string) error
 }

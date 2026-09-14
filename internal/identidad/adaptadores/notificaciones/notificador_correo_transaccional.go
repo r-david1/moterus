@@ -9,22 +9,24 @@ import (
 	"github.com/r-david1/moterus/internal/plataforma/correo"
 )
 
-// NotificadorCorreoResend implementa puertos.NotificadorCorreo enviando un
-// correo real vía plataforma/correo.ClienteResend (ADR 0054). Es la
+// NotificadorCorreoTransaccional implementa puertos.NotificadorCorreo
+// enviando un correo real vía un correo.EnviadorCorreo (SMTP genérico hoy
+// — ADR 0054/0055, el proveedor concreto es intercambiable detrás de la
+// interfaz). Es la
 // implementación de producción; NotificadorCorreoLog sigue existiendo como
-// fallback de desarrollo cuando RESEND_API_KEY no está configurada — ver
+// fallback de desarrollo cuando no hay ningún proveedor configurado — ver
 // cmd/api/main.go.
-type NotificadorCorreoResend struct {
-	cliente     *correo.ClienteResend
+type NotificadorCorreoTransaccional struct {
+	enviador    correo.EnviadorCorreo
 	urlFrontend string
 }
 
-var _ puertos.NotificadorCorreo = (*NotificadorCorreoResend)(nil)
+var _ puertos.NotificadorCorreo = (*NotificadorCorreoTransaccional)(nil)
 
-// NuevoNotificadorCorreoResend construye el adaptador. urlFrontend puede
-// ir vacío (ver EnviarVerificacion).
-func NuevoNotificadorCorreoResend(cliente *correo.ClienteResend, urlFrontend string) *NotificadorCorreoResend {
-	return &NotificadorCorreoResend{cliente: cliente, urlFrontend: urlFrontend}
+// NuevoNotificadorCorreoTransaccional construye el adaptador. urlFrontend
+// puede ir vacío (ver EnviarVerificacion).
+func NuevoNotificadorCorreoTransaccional(enviador correo.EnviadorCorreo, urlFrontend string) *NotificadorCorreoTransaccional {
+	return &NotificadorCorreoTransaccional{enviador: enviador, urlFrontend: urlFrontend}
 }
 
 // EnviarVerificacion construye el correo de verificación y lo envía. El
@@ -34,7 +36,7 @@ func NuevoNotificadorCorreoResend(cliente *correo.ClienteResend, urlFrontend str
 // clicable; si no (no existe frontend propio todavía, ADR 0002), el correo
 // presenta el token en claro con instrucciones para pasarlo directamente a
 // POST /identidad/verificaciones-correo.
-func (n *NotificadorCorreoResend) EnviarVerificacion(ctx context.Context, correoDestino dominio.Correo, tokenPlano string) error {
+func (n *NotificadorCorreoTransaccional) EnviarVerificacion(ctx context.Context, correoDestino dominio.Correo, tokenPlano string) error {
 	var cuerpo string
 	if n.urlFrontend != "" {
 		enlace := fmt.Sprintf("%s/verificar-correo?token=%s", n.urlFrontend, tokenPlano)
@@ -52,7 +54,7 @@ func (n *NotificadorCorreoResend) EnviarVerificacion(ctx context.Context, correo
 		)
 	}
 
-	if err := n.cliente.Enviar(ctx, correo.Mensaje{
+	if err := n.enviador.Enviar(ctx, correo.Mensaje{
 		Destinatario: correoDestino.Normalizado(),
 		Asunto:       "Confirmá tu correo",
 		TextoPlano:   cuerpo,

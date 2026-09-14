@@ -435,7 +435,7 @@ Cierra el gap detectado al cerrar el hito de infraestructura: un usuario registr
 - **Por qué SHA-256 y no Argon2id aquí:** Argon2id (ADR 0008) defiende contra fuerza bruta sobre secretos de **baja entropía elegidos por humanos** (contraseñas). Un token de verificación es un secreto aleatorio de **alta entropía generada por el sistema** (32 bytes vía `crypto/rand`) — no hay ataque de diccionario posible, así que el costo computacional de Argon2id no aporta nada aquí y sí penalizaría innecesariamente cada verificación. SHA-256 (stdlib, `crypto/sha256`) es el criterio estándar para este tipo de token (mismo patrón que tokens de reseteo de contraseña en la mayoría de frameworks de auth).
 - Token de un solo uso: se borra de la tabla al verificarse (éxito) o se sobreescribe (reenvío invalida el anterior). Vigencia: 24 horas (constante, ajustable sin migración).
 - `RegistrarUsuario` (caso de uso ya cerrado, **se modifica**): tras guardar el usuario en estado `pendiente_verificacion`, genera un token (nuevo puerto de salida `GeneradorTokens`), guarda su hash junto con la expiración en la MISMA unidad de trabajo (igual patrón que la auditoría, ADR 0005), y entrega el token **en claro** solo al puerto `PublicadorEventos`/un nuevo puerto de envío — **nunca en la respuesta HTTP** (devolverlo al cliente permitiría auto-verificarse sin haber recibido el correo, rompiendo por completo el propósito del mecanismo).
-- Envío real del correo: **cerrado en ADR 0054** — `NotificadorCorreoResend` (directo desde Go contra la API de Resend, sin automatización externa de por medio) es la implementación de producción; el stub log-only (`NotificadorCorreoLog`, mismo patrón que `PublicadorEventos`/`EvaluadorConfianza` no-op) sigue existiendo solo como fallback cuando `RESEND_API_KEY` no está configurada fuera de producción.
+- Envío real del correo: **cerrado en ADR 0054/0055** — `NotificadorCorreoTransaccional` (directo desde Go vía SMTP genérico, sin automatización externa de por medio) es la implementación de producción; el stub log-only (`NotificadorCorreoLog`, mismo patrón que `PublicadorEventos`/`EvaluadorConfianza` no-op) sigue existiendo solo como fallback cuando `SMTP_HOST` no está configurada fuera de producción.
 
 **Nuevos puertos de salida:**
 
@@ -457,8 +457,9 @@ type RepositorioTokensVerificacion interface {
 }
 
 // NotificadorCorreo envía el enlace/token de verificación al usuario.
-// Implementación de producción: NotificadorCorreoResend (ADR 0054, directo
-// contra Resend); NotificadorCorreoLog es el fallback de desarrollo.
+// Implementación de producción: NotificadorCorreoTransaccional (ADR
+// 0054/0055, directo vía SMTP genérico); NotificadorCorreoLog es el
+// fallback de desarrollo.
 type NotificadorCorreo interface {
     EnviarVerificacion(ctx context.Context, correo dominio.Correo, tokenPlano string) error
 }

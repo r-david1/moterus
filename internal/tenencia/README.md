@@ -175,10 +175,10 @@ necesita conocer sin leer el diseño completo:
   respuesta HTTP de `POST .../invitaciones` (`vistaInvitacionRespuesta` no
   tiene campo para él), nunca se persiste (solo su hash SHA-256), nunca se
   loguea ni viaja en un evento de auditoría. Sale del proceso **solo** por
-  `NotificadorInvitaciones` — `NotificadorInvitacionesResend` en producción
-  (directo contra Resend, ADR 0054), `NotificadorInvitacionesLog` como
-  fallback de desarrollo (mismo patrón que `NotificadorCorreoLog` de
-  Identidad).
+  `NotificadorInvitaciones` — `NotificadorInvitacionesTransaccional` en
+  producción (directo vía SMTP genérico, ADR 0054/0055),
+  `NotificadorInvitacionesLog` como fallback de desarrollo (mismo patrón
+  que `NotificadorCorreoLog` de Identidad).
 - **INV-TEN-25** — solo se auditan las **denegaciones** de autorización
   (`autorizacion.denegada`); nunca existe un evento de "autorización
   concedida". `Autorizar` corre en el camino más caliente de todo el
