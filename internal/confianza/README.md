@@ -357,6 +357,38 @@ diferencia de la sala, acá el mecanismo no protege capacidad, y agregar
 fricción a un login legítimo por un fallo de caché nunca es aceptable. Ver
 `docs/design/fingerprinting-comportamiento.md` §3.3.
 
+## Asimetría de mecanismos: salida del titular (ADR 0053)
+
+Todo mecanismo de este contexto que pueda denegarle el acceso a una cuenta
+concreta tiene que ofrecerle a su titular legítimo una salida que él pueda
+recorrer por sí mismo — sin depender de un tercero, de un rol que no
+existe, ni de un canal no implementado (regla de la salida alcanzable,
+ADR 0053, generalizada desde INV-RIES-01/INV-RIES-02 de ADR 0051). Un
+mecanismo cuya salida no está disponible en el despliegue actual no es
+contención: es un bloqueo, y no puede desplegarse hasta que su salida
+exista de verdad — es el argumento que cerró ADR 0011 (bloqueo persistente
+de cuenta) como decisión de no implementar.
+
+| Mecanismo | Ante fallo del motor | Conmutable | Salida del titular |
+|---|---|---|---|
+| Rate limiting por IP | open | no | esperar ≤ 1 min, o cambiar de red |
+| Rate limiting por cuenta | open | no | **captcha, en el mismo intento** — depende de `TURNSTILE_SECRET_KEY` |
+| Captcha | closed | no | resolverlo |
+| Sala de espera (colas virtuales) | open | sí, por sala | esperar el turno (nadie es rechazado) |
+| Reconocimiento de origen | open | no | captcha, en el mismo intento |
+| Bloqueo persistente de cuenta | — | — | ninguna → por eso no se implementa (ADR 0011) |
+
+**Consecuencia que la propia regla expone**: la fila "rate limiting por
+cuenta" depende de que `TURNSTILE_SECRET_KEY` esté configurada para que su
+salida exista de verdad. Hoy, arrancar sin esa llave deja el captcha
+fail-closed (ADR 0018) — la única salida del cooldown de cuenta queda
+cerrada desde el primer minuto. Este README no cambia ese comportamiento
+de arranque; lo documenta como una dependencia dura, no una mejora
+opcional (ver `docs/adr/0053-regla-de-la-salida-alcanzable.md` y
+`docs/design/bloqueo-cuenta.md` §3.2 y §10 paso 4b para la nota operativa
+sobre si producción debería fallar al arrancar sin esa llave — es un
+cambio de comportamiento que exige su propia conformidad explícita).
+
 ## Auditoría
 
 Se auditan las tres mutaciones del ciclo de vida de una sala
@@ -400,6 +432,15 @@ evaluaciones/denegaciones del reconocimiento de origen).
   `auditoria`): `docs/adr/0050-sin-tabla-ni-worker-indice-redis-derivado.md`
 - ADR 0051 (la escalada es solo captcha, nunca step-up, en el MVP):
   `docs/adr/0051-escalada-solo-captcha-nunca-step-up.md`
+- ADR 0011 (sin bloqueo automático de cuenta — el candidato que motivó
+  encontrar el bug de ADR 0052, resuelto en Identidad, no en Confianza):
+  `docs/adr/0011-sin-bloqueo-automatico-de-cuenta.md`
+- ADR 0052 (el cooldown exponencial del rate limiting por cuenta —
+  `PoliticaLimites.Para()` — nunca escala más allá de su ventana nominal;
+  corrige una subestimación del propio ADR 0018):
+  `docs/adr/0052-cooldown-exponencial-solo-en-clave-propia.md`
+- ADR 0053 (regla de la salida alcanzable — la tabla de asimetrías de
+  arriba): `docs/adr/0053-regla-de-la-salida-alcanzable.md`
 - Índice completo de ADRs: `docs/adr/README.md`
 
 ## Referencias
